@@ -11,7 +11,7 @@ load_dotenv()
 
 class ProductComparisonFlow(Flow):
     @start()
-    def find_product_details(self, progress=gr.Progress(track_tqdm=True)):  
+    def find_product_details(self):
         product_details_finding_crew = Crew(
             agents=[product_details_finder], 
             tasks=[product_details_task]
@@ -22,14 +22,14 @@ class ProductComparisonFlow(Flow):
         num_urls = self.state["num_urls"]
 
         product1_details = product_details_finding_crew.kickoff(inputs={"product_name": product1, "num_urls": num_urls})
-        progress(0.1, desc="Found the relevant URLs for product 1...")
+        self.progress(0.1, desc="Found the relevant URLs for product 1...")
         
         product2_details = product_details_finding_crew.kickoff(inputs={"product_name": product2, "num_urls": num_urls})
-        progress(0.2, desc="Found the relevant URLs for product 2...")
+        self.progress(0.2, desc="Found the relevant URLs for product 2...")
         return [product1_details, product2_details]
     
     @listen(find_product_details)
-    def scrape_product_details(self, product_details_list, progress=gr.Progress(track_tqdm=True)):
+    def scrape_product_details(self, product_details_list):
         product_scraping_crew = Crew(
             agents=[product_scraper_agent], 
             tasks=[product_scrape_task]
@@ -42,15 +42,15 @@ class ProductComparisonFlow(Flow):
         num_highlights = self.state["num_highlights"]
 
         product1_scrape = product_scraping_crew.kickoff(inputs={"product_name": product1_details["name"], "urls": product1_urls, "num_highlights": num_highlights})
-        progress(0.4, desc="Collected product 1 details...")
+        self.progress(0.4, desc="Collected product 1 details...")
 
         product2_scrape = product_scraping_crew.kickoff(inputs={"product_name": product2_details["name"], "urls": product2_urls, "num_highlights": num_highlights})
-        progress(0.7, desc="Collected product 2 details...")
+        self.progress(0.7, desc="Collected product 2 details...")
 
         return [product1_scrape, product2_scrape]
 
     @listen(scrape_product_details)
-    def report_product_details(self, product_scrape_list, progress=gr.Progress(track_tqdm=True)):
+    def report_product_details(self, product_scrape_list):
         comparision_crew = Crew(
             agents=[comparision_agent], 
             tasks=[comparision_task]
@@ -64,12 +64,15 @@ class ProductComparisonFlow(Flow):
         product2_highlights = product2_scrape["highlights"]
         num_highlights = self.state["num_highlights"]
 
-        progress(0.7, desc="Generating the report...")
+        self.progress(0.7, desc="Generating the report...")
         product_comparison_report = comparision_crew.kickoff(inputs={"product1_name": product1_name, "product1_highlights": product1_highlights, "product2_name": product2_name, "product2_highlights": product2_highlights, "num_highlights": num_highlights})
         return product_comparison_report
 
-def product_comparison(product_name1, product_name2, num_urls, num_highlights):
+def product_comparison(product_name1, product_name2, num_urls, num_highlights, progress=gr.Progress(track_tqdm=True)):
     flow = ProductComparisonFlow()
+    # gr.Progress is only injected into the function Gradio calls, not into Flow
+    # methods, so it is received here and handed to the flow.
+    flow.progress = progress
     flow.state["product1"] = product_name1
     flow.state["product2"] = product_name2
     flow.state["num_urls"] = num_urls
@@ -92,12 +95,5 @@ iface = gr.Interface(
     description="Enter two product names to compare their details."
 )
 
-iface.launch()
-
-
-
-
-
-
-
-
+if __name__ == "__main__":
+    iface.launch()

@@ -25,6 +25,8 @@ An AI-powered agent that compares two products side-by-side by automatically sea
 
 ## Setup / Installation
 
+Requires Python 3.10 or newer (current CrewAI releases do not support older versions).
+
 ```bash
 git clone https://github.com/bnarasimha21/product-comparison-agent.git
 cd product-comparison-agent
@@ -33,7 +35,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create a `.env` file with your API keys:
+Create a `.env` file in the project root with your API keys (`OPENAI_API_KEY` drives the agents' default LLM, `SERPER_API_KEY` is used by the search tool):
 
 ```env
 OPENAI_API_KEY=your_openai_api_key
