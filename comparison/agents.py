@@ -168,9 +168,21 @@ class ComparisonDraft(BaseModel):
 
 
 def format_indexed_highlights(highlights: list) -> str:
+    """Render each highlight's VERIFIED quote, never its unverified `text`
+    paraphrase, for the Comparison Agent's prompt.
+
+    `text` is a model-authored label that is never checked against
+    anything (see comparison/grounding.py and Highlight's own docstring).
+    Feeding `text` here would let the Comparison Agent line up/label rows
+    based on a claim nobody ever verified, even though the highlight's own
+    `quote` passed grounding -- defeating the point of grounding highlights
+    in the first place. `quote` is the only field this app ever treats as
+    checked, so it is the only field the model is shown when deciding how
+    to present a highlight.
+    """
     if not highlights:
         return "(no grounded highlights)"
-    return "\n".join(f"{i + 1}. {h.text}" for i, h in enumerate(highlights))
+    return "\n".join(f"{i + 1}. {h.quote}" for i, h in enumerate(highlights))
 
 
 def build_comparison_crew(

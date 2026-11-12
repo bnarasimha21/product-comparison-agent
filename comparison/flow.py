@@ -180,7 +180,24 @@ class ProductComparisonFlow(Flow[CompareState]):
             )
 
         fetch_started = time.monotonic()
-        pages_list = await asyncio.gather(*[asyncio.to_thread(self.fetch_fn, url) for url in selected])
+        # return_exceptions=True isolates one URL's unexpected failure (a
+        # bad port, a malformed URL, a library bug -- anything fetch_fn
+        # raises instead of returning Page(ok=False, ...) for) from every
+        # other URL in this same product's batch. Without it, one bad page
+        # would cancel/abort the whole gather and take this entire
+        # product's fetch stage down, not just that one page (the same
+        # class of bug _report_or_errored already fixes one level up, at
+        # the per-PRODUCT boundary).
+        fetch_outcomes = await asyncio.gather(
+            *[asyncio.to_thread(self.fetch_fn, url) for url in selected],
+            return_exceptions=True,
+        )
+        pages_list = [
+            outcome
+            if isinstance(outcome, Page)
+            else Page(url=url, text="", ok=False, error=f"fetch failed: {outcome}")
+            for url, outcome in zip(selected, fetch_outcomes, strict=True)
+        ]
         pages = {page.url: page for page in pages_list}
         usable_pages = {url: page for url, page in pages.items() if page.ok}
         self._record_stage(

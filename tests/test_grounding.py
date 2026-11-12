@@ -8,19 +8,19 @@ def _page(url: str, text: str) -> Page:
 
 def test_exact_match_grounded():
     page = _page("https://a.example/", "WidgetPro costs $19 per month.")
-    highlight = Highlight(text="costs $19/mo", source_url=page.url, quote="costs $19 per month")
+    highlight = Highlight(text="costs $19/mo", source_url=page.url, quote="WidgetPro costs $19 per month")
     assert is_grounded(highlight, {page.url: page})
 
 
 def test_case_difference_still_grounded():
     page = _page("https://a.example/", "WidgetPro Costs $19 Per Month.")
-    highlight = Highlight(text="x", source_url=page.url, quote="costs $19 per month")
+    highlight = Highlight(text="x", source_url=page.url, quote="widgetpro costs $19 per month")
     assert is_grounded(highlight, {page.url: page})
 
 
 def test_whitespace_difference_still_grounded():
     page = _page("https://a.example/", "WidgetPro costs\n$19   per month.")
-    highlight = Highlight(text="x", source_url=page.url, quote="costs $19 per month")
+    highlight = Highlight(text="x", source_url=page.url, quote="WidgetPro costs $19 per month")
     assert is_grounded(highlight, {page.url: page})
 
 
@@ -29,7 +29,7 @@ def test_punctuation_difference_not_grounded():
     adds or drops punctuation the page does not have is correctly rejected
     as an inexact match, not silently accepted."""
     page = _page("https://a.example/", "WidgetPro costs $19 per month")
-    highlight = Highlight(text="x", source_url=page.url, quote="costs $19, per month.")
+    highlight = Highlight(text="x", source_url=page.url, quote="WidgetPro costs $19, per month.")
     assert not is_grounded(highlight, {page.url: page})
 
 
@@ -61,7 +61,7 @@ def test_empty_quote_not_grounded():
 
 def test_ground_highlights_splits_grounded_and_dropped():
     page = _page("https://a.example/", "WidgetPro costs $19 per month.")
-    real = Highlight(text="price", source_url=page.url, quote="costs $19 per month")
+    real = Highlight(text="price", source_url=page.url, quote="WidgetPro costs $19 per month")
     fabricated = Highlight(text="fake", source_url=page.url, quote="made up claim not on the page")
     grounded, dropped = ground_highlights([real, fabricated], {page.url: page})
     assert grounded == [real]
@@ -92,3 +92,19 @@ def test_short_two_word_quote_below_char_minimum_not_grounded():
     page = _page("https://a.example/", "It is on sale.")
     highlight = Highlight(text="x", source_url=page.url, quote="on sale")
     assert not is_grounded(highlight, {page.url: page})
+
+
+def test_reviewer_cited_connector_phrases_not_grounded():
+    """The exact bypass confirmed in the second adversarial review: the
+    PREVIOUS bar (2 words / 12 chars) let a bare connector phrase that
+    carries no actual claim pass as "evidence" because it is a substring
+    of almost any product page. "the phone is" (12 chars, 3 words) and
+    "is one of the" (13 chars, 4 words) both cleared the old bar; the
+    raised bar (3 words / 20 chars) must reject both outright."""
+    page = _page(
+        "https://a.example/",
+        "The phone is one of the best devices on the market this year.",
+    )
+    for quote in ("the phone is", "is one of the"):
+        highlight = Highlight(text="x", source_url=page.url, quote=quote)
+        assert not is_grounded(highlight, {page.url: page}), quote

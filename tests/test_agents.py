@@ -1,6 +1,7 @@
 """Unit tests for pure helpers in comparison/agents.py (no LLM, no I/O)."""
 
-from comparison.agents import _safe_label, escape_page_delimiters
+from comparison.agents import _safe_label, escape_page_delimiters, format_indexed_highlights
+from comparison.models import Highlight
 
 
 def test_safe_label_neutralizes_braces():
@@ -36,3 +37,25 @@ def test_escape_page_delimiters_neutralizes_opening_tag():
 def test_escape_page_delimiters_leaves_ordinary_text_unchanged():
     text = "WidgetPro costs $19 per month and ships worldwide."
     assert escape_page_delimiters(text) == text
+
+
+def test_format_indexed_highlights_renders_quote_not_text():
+    """Regression for issue 3's root cause: the Comparison Agent's prompt
+    must be built from each highlight's VERIFIED `quote`, never its
+    unverified `text` paraphrase. A model could make `text` say anything
+    it likes (it is never checked against a source), so if `text` leaked
+    into this prompt, the Comparison Agent could line up/label rows based
+    on a claim nobody ever verified, even though grounding had already
+    rejected it from `quote`."""
+    highlight = Highlight(
+        text="a completely unverified fabricated paraphrase",
+        source_url="https://a.example/",
+        quote="WidgetPro costs $19 per month",
+    )
+    rendered = format_indexed_highlights([highlight])
+    assert "WidgetPro costs $19 per month" in rendered
+    assert "unverified fabricated paraphrase" not in rendered
+
+
+def test_format_indexed_highlights_empty_list():
+    assert format_indexed_highlights([]) == "(no grounded highlights)"

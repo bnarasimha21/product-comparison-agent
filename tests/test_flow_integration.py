@@ -53,7 +53,7 @@ async def test_flow_produces_exact_num_highlights_rows(local_server):
                     {
                         "highlights": [
                             {"text": "price", "quote": "WidgetPro costs $19 per month"},
-                            {"text": "shipping", "quote": "ships worldwide"},
+                            {"text": "shipping", "quote": "per month and ships worldwide"},
                         ]
                     }
                 )
@@ -63,7 +63,7 @@ async def test_flow_produces_exact_num_highlights_rows(local_server):
                     {
                         "highlights": [
                             {"text": "price", "quote": "GadgetMax costs $25 per month"},
-                            {"text": "app", "quote": "has a mobile app"},
+                            {"text": "app", "quote": "per month and has a mobile app"},
                         ]
                     }
                 )
@@ -98,8 +98,8 @@ async def test_flow_produces_exact_num_highlights_rows(local_server):
 async def test_comparison_prompt_contains_both_products_highlights(local_server):
     """Asserts the comparison task was actually given both products'
     extracted highlights, by inspecting the recorded LLM call messages."""
-    url_a = local_server.add_page("/a.html", "<html><body>WidgetPro is fast.</body></html>")
-    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light.</body></html>")
+    url_a = local_server.add_page("/a.html", "<html><body>WidgetPro is fast and reliable.</body></html>")
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light and durable.</body></html>")
 
     def fetch(url, **kwargs):
         from comparison.fetch import fetch_page
@@ -111,10 +111,10 @@ async def test_comparison_prompt_contains_both_products_highlights(local_server)
             "URL Selector for WidgetPro": [_reply({"urls": [url_a]})],
             "URL Selector for GadgetMax": [_reply({"urls": [url_b]})],
             "Highlight Extractor for WidgetPro": [
-                _reply({"highlights": [{"text": "speed", "quote": "WidgetPro is fast"}]})
+                _reply({"highlights": [{"text": "speed", "quote": "WidgetPro is fast and reliable"}]})
             ],
             "Highlight Extractor for GadgetMax": [
-                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light"}]})
+                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light and durable"}]})
             ],
             "Comparison Agent": [_reply({"rows": [{"aspect": "Feel", "a_index": 1, "b_index": 1}]})],
         }
@@ -131,8 +131,12 @@ async def test_comparison_prompt_contains_both_products_highlights(local_server)
     compare_calls = [c for c in llm.calls if c["role"] == "Comparison Agent"]
     assert len(compare_calls) == 1
     prompt_text = str(compare_calls[0]["messages"])
-    assert "speed" in prompt_text
-    assert "weight" in prompt_text
+    # format_indexed_highlights renders the verified `quote`, not the
+    # model-authored `text` label, so the prompt-content check below must
+    # look for content unique to each product's quote, not the "speed"/
+    # "weight" text labels (which are no longer fed to this prompt at all).
+    assert "reliable" in prompt_text
+    assert "durable" in prompt_text
 
 
 @pytest.mark.asyncio
@@ -202,7 +206,7 @@ async def test_one_product_crashing_does_not_abort_the_other(local_server):
                 raise RuntimeError("simulated search provider bug")
             return self._working.search(query, n)
 
-    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light.</body></html>")
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light and durable.</body></html>")
 
     working = _build_search("WidgetPro", "GadgetMax", "https://unused.example/a.html", url_b)
     from comparison.search import query_templates
@@ -219,7 +223,7 @@ async def test_one_product_crashing_does_not_abort_the_other(local_server):
         scripts={
             "URL Selector for GadgetMax": [_reply({"urls": [url_b]})],
             "Highlight Extractor for GadgetMax": [
-                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light"}]})
+                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light and durable"}]})
             ],
             "Comparison Agent": [_reply({"rows": [{"aspect": "Feel", "a_index": None, "b_index": 1}]})],
         }
@@ -237,7 +241,86 @@ async def test_one_product_crashing_does_not_abort_the_other(local_server):
     assert "simulated search provider bug" in result.product1_error
     assert result.product2_error is None
     assert len(result.rows) == 1
-    assert result.rows[0].b_text == "GadgetMax is light"
+    assert result.rows[0].b_text == "GadgetMax is light and durable"
+
+
+@pytest.mark.asyncio
+async def test_one_url_fetch_exception_does_not_abort_the_others(local_server):
+    """Regression for issue 2b: without return_exceptions=True on the
+    per-URL asyncio.gather in _research_one, one URL's fetch_fn raising an
+    unexpected exception (e.g. a library bug, or the malformed-URL
+    ValueError that fetch_page itself now avoids, see issue 2a) used to
+    cancel the whole gather and abort every other URL in that same
+    product's fetch batch, not just the bad one. With the fix, the
+    crashing URL degrades to a failed Page and the other URL's content is
+    still usable."""
+    url_good = local_server.add_page(
+        "/good.html", "<html><body>WidgetPro ships worldwide and is well reviewed.</body></html>"
+    )
+    url_bad = "https://this-url-crashes.example/bad"
+
+    search = FixtureSearch(
+        {
+            **{
+                q: [
+                    SearchResult(title="good", url=url_good, snippet=""),
+                    SearchResult(title="bad", url=url_bad, snippet=""),
+                ]
+                for q in __import__(
+                    "comparison.search", fromlist=["query_templates"]
+                ).query_templates("WidgetPro")
+            }
+        }
+    )
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light and durable.</body></html>")
+    search_b = _build_search("GadgetMax", "GadgetMax2", url_b, url_b)
+
+    class CombinedSearch:
+        def search(self, query, n):
+            a_results = search.search(query, n)
+            if a_results:
+                return a_results
+            return search_b.search(query, n)
+
+    def fetch(url, **kwargs):
+        from comparison.fetch import fetch_page
+
+        if url == url_bad:
+            raise RuntimeError("simulated fetch_fn bug on one URL")
+        return fetch_page(url, allow_http=True, allow_private=True)
+
+    llm = FakeLLM(
+        scripts={
+            "URL Selector for WidgetPro": [_reply({"urls": [url_good, url_bad]})],
+            "URL Selector for GadgetMax": [_reply({"urls": [url_b]})],
+            "Highlight Extractor for WidgetPro": [
+                _reply({"highlights": [{"text": "shipping", "quote": "WidgetPro ships worldwide and is well reviewed"}]})
+            ],
+            "Highlight Extractor for GadgetMax": [
+                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light and durable"}]})
+            ],
+            "Comparison Agent": [_reply({"rows": [{"aspect": "Overview", "a_index": 1, "b_index": 1}]})],
+        }
+    )
+
+    flow = ProductComparisonFlow(llm=llm, search_provider=CombinedSearch(), fetch_fn=fetch)
+    flow.state.request = CompareRequest(
+        product1="WidgetPro", product2="GadgetMax", num_urls=2, num_highlights=1
+    )
+    await flow.kickoff_async()
+
+    report1 = flow.state.product1_report
+    assert report1 is not None
+    assert report1.error is None  # the product's research still completed overall
+    assert set(report1.selected_urls) == {url_good, url_bad}
+    assert report1.pages[url_bad].ok is False
+    assert "simulated fetch_fn bug on one URL" in report1.pages[url_bad].error
+    assert report1.pages[url_good].ok is True
+    assert len(report1.highlights) == 1
+
+    result = flow.state.result
+    assert result is not None
+    assert len(result.rows) == 1
 
 
 @pytest.mark.asyncio

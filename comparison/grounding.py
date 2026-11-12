@@ -30,13 +30,18 @@ _WORD_RE = re.compile(r"[a-z0-9]+")
 # A quote must be at least this many characters and contain at least this
 # many distinct words to count as evidence. Without this, a single common
 # word ("the", "is") is trivially a substring of almost any page, so
-# `is_grounded` would accept a quote that proves nothing. Two words / 12
-# characters is deliberately low (not e.g. a full sentence): it is enough to
-# reject a single bare word while still accepting genuine short factual
-# quotes already used throughout this app's own fixtures and tests, such as
-# "weighs 180 grams" or "community plugins".
-MIN_QUOTE_WORDS = 2
-MIN_QUOTE_CHARS = 12
+# `is_grounded` would accept a quote that proves nothing.
+#
+# The previous bar (2 words / 12 characters) was still trivial to clear
+# with a bare connector phrase that carries no actual claim: "the phone
+# is" (12 chars, 3 words) and "is one of the" (13 chars, 4 words) both
+# passed it and are substrings of almost any product page. Raising the
+# character floor to 20 (and requiring 3 distinct words, not 2) rejects
+# both of those outright while still accepting genuine short factual
+# quotes, such as "WidgetPro costs $19 per month" or "weighs 1.24
+# kilograms".
+MIN_QUOTE_WORDS = 3
+MIN_QUOTE_CHARS = 20
 
 
 def normalize(text: str) -> str:

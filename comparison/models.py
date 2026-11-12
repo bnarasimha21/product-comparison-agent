@@ -92,14 +92,36 @@ class ProductReport(BaseModel):
     error: str | None = None
 
 
+MAX_ASPECT_CHARS = 48
+
+
 class ComparisonRow(BaseModel):
-    """One row of the final report, referencing grounded evidence by index."""
+    """One row of the final report, referencing grounded evidence by index.
+
+    ``aspect`` is a short category label ("Battery life", "Price") chosen
+    by the Comparison Agent -- it is NEVER checked against any source, the
+    same as Highlight.text. Without a length cap, a model could smuggle a
+    full, unverified claim into the aspect label itself (e.g.
+    ``aspect="Battery: Alpha lasts 48 hours, Beta only 10"``), which would
+    render right next to grounded a_text/b_text and read as if it were
+    equally verified, even though nothing ever checked it against a
+    source -- a ground-rate-bypass route distinct from (and in addition
+    to) a_text/b_text themselves. Truncating to MAX_ASPECT_CHARS keeps
+    aspect usable as a short label while making it structurally unable to
+    carry a sentence-length claim.
+    """
 
     aspect: str
     a_text: str | None = None
     a_source: str | None = None
     b_text: str | None = None
     b_source: str | None = None
+
+    @field_validator("aspect")
+    @classmethod
+    def _cap_aspect_length(cls, value: str) -> str:
+        collapsed = " ".join(value.split())
+        return collapsed[:MAX_ASPECT_CHARS]
 
 
 class ComparisonResult(BaseModel):
