@@ -1,0 +1,17 @@
+id: sparse_pair
+product1: Obsidian
+product2: Zettel Forge
+num_urls: 1
+num_highlights: 2
+pages:
+  product1:
+    "fixture://obsidian/about": >
+      <html><body>Obsidian stores notes as local markdown files and
+      supports community plugins.</body></html>
+  product2: {}
+golden:
+  Obsidian:
+    - "local markdown files"
+    - "community plugins"
+  Zettel Forge: []
+false_facts: {}

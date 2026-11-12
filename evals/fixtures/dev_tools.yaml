@@ -1,0 +1,34 @@
+id: dev_tools
+product1: Docker
+product2: Podman
+num_urls: 2
+num_highlights: 3
+pages:
+  product1:
+    "fixture://docker/docs": >
+      <html><body>Docker requires a background daemon and uses the dockerd
+      process. It is widely supported across ci systems.</body></html>
+    "fixture://docker/review": >
+      <html><body>Docker Desktop is available for Mac and Windows.</body></html>
+  product2:
+    "fixture://podman/docs": >
+      <html><body>Podman runs daemonless and supports rootless containers
+      by default. It is a drop-in replacement for many docker
+      commands.</body></html>
+    "fixture://podman/review": >
+      <html><body>Podman Desktop is also available for Mac and
+      Windows.</body></html>
+golden:
+  Docker:
+    - "background daemon"
+    - "dockerd process"
+    - "widely supported across ci"
+  Podman:
+    - "runs daemonless"
+    - "rootless containers"
+    - "drop-in replacement"
+false_facts:
+  Docker:
+    - "runs daemonless"
+  Podman:
+    - "background daemon"

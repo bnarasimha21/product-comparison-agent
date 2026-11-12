@@ -1,0 +1,32 @@
+id: saas_tools
+product1: Notion
+product2: Airtable
+num_urls: 2
+num_highlights: 3
+pages:
+  product1:
+    "fixture://notion/pricing": >
+      <html><body>Notion offers a free plan for personal use and a team
+      plan at $8 per user per month. It supports nested databases.</body></html>
+    "fixture://notion/review": >
+      <html><body>Users like Notion's flexible page templates.</body></html>
+  product2:
+    "fixture://airtable/pricing": >
+      <html><body>Airtable offers a free plan and a team plan at $20 per
+      user per month. It supports linked records across tables.</body></html>
+    "fixture://airtable/review": >
+      <html><body>Users like Airtable's powerful view filters.</body></html>
+golden:
+  Notion:
+    - "$8 per user per month"
+    - "nested databases"
+    - "flexible page templates"
+  Airtable:
+    - "$20 per user per month"
+    - "linked records"
+    - "view filters"
+false_facts:
+  Notion:
+    - "$20 per user per month"
+  Airtable:
+    - "$8 per user per month"
