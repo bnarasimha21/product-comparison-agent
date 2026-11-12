@@ -95,12 +95,11 @@ def test_short_two_word_quote_below_char_minimum_not_grounded():
 
 
 def test_reviewer_cited_connector_phrases_not_grounded():
-    """The exact bypass confirmed in the second adversarial review: the
-    PREVIOUS bar (2 words / 12 chars) let a bare connector phrase that
-    carries no actual claim pass as "evidence" because it is a substring
-    of almost any product page. "the phone is" (12 chars, 3 words) and
-    "is one of the" (13 chars, 4 words) both cleared the old bar; the
-    raised bar (3 words / 20 chars) must reject both outright."""
+    """The exact bypass confirmed in the second adversarial review: a bare
+    connector phrase that carries no actual claim passes as "evidence"
+    because it is a substring of almost any product page. "the phone is"
+    and "is one of the" must be rejected because each has at most one word
+    that isn't filler/stopword, below the substantive-word floor."""
     page = _page(
         "https://a.example/",
         "The phone is one of the best devices on the market this year.",
@@ -108,3 +107,98 @@ def test_reviewer_cited_connector_phrases_not_grounded():
     for quote in ("the phone is", "is one of the"):
         highlight = Highlight(text="x", source_url=page.url, quote=quote)
         assert not is_grounded(highlight, {page.url: page}), quote
+
+
+def test_short_genuine_factual_quotes_are_grounded():
+    """THE REGRESSION (third adversarial review): the previous pure
+    length-based floor (3 words / 20 chars) overshot and rejected these
+    genuine short factual quotes even though they are real, substantive
+    facts and each is well above the connector-phrase bar in substance.
+    This caused fake-mode eval fact_recall/ground_rate to drop from 1.00 to
+    well below that. All four must be grounded."""
+    cases = [
+        ("https://a.example/", "The iPhone weighs 171 grams.", "weighs 171 grams"),
+        ("https://b.example/", "It has a 6.1-inch display.", "6.1-inch display"),
+        ("https://c.example/", "It ships with USB-C.", "ships with usb-c"),
+        ("https://d.example/", "WidgetPro costs $19 per month.", "costs $19 per month"),
+    ]
+    for url, page_text, quote in cases:
+        page = _page(url, page_text)
+        highlight = Highlight(text="x", source_url=url, quote=quote)
+        assert is_grounded(highlight, {url: page}), quote
+
+
+def test_marketing_filler_quotes_still_not_grounded():
+    """The floor must keep rejecting real junk that happens to be a
+    substring of a page, even though it's of similar or greater length
+    than the genuine short quotes above."""
+    cases = [
+        (
+            "https://a.example/",
+            "This is on the market this year, available everywhere.",
+            "on the market this year",
+        ),
+        (
+            "https://b.example/",
+            "By using this site, terms and conditions apply to you.",
+            "terms and conditions apply",
+        ),
+        (
+            "https://c.example/",
+            "For more info, click here to learn more about pricing.",
+            "click here to learn more",
+        ),
+        (
+            "https://d.example/",
+            "Copyright 2026, all rights reserved.",
+            "all rights reserved.",
+        ),
+        (
+            "https://e.example/",
+            "Ratings: 1 2 3 4 5 6 7 8 9 10 out of 10 reviewers liked it.",
+            "1 2 3 4 5 6 7 8 9 10",
+        ),
+    ]
+    for url, page_text, quote in cases:
+        page = _page(url, page_text)
+        highlight = Highlight(text="x", source_url=url, quote=quote)
+        assert not is_grounded(highlight, {url: page}), quote
+
+
+def test_mid_word_fragment_not_grounded():
+    page = _page("https://a.example/", "The phone is one of the best on the market.")
+    highlight = Highlight(text="x", source_url=page.url, quote="e phone is one of the")
+    assert not is_grounded(highlight, {page.url: page})
+
+
+def test_negated_source_rejects_quote_that_flips_meaning():
+    """The exact negation-flip bypass cited in the third adversarial
+    review: the quote is a real, verbatim substring of the source, but the
+    source negates it just outside the quoted span, so the quote asserts
+    the OPPOSITE of what the source actually says. Both reviewer-cited
+    examples must be rejected as NOT grounded."""
+    page1 = _page(
+        "https://a.example/", "It does not support wireless charging at all."
+    )
+    highlight1 = Highlight(
+        text="x", source_url=page1.url, quote="support wireless charging at all"
+    )
+    assert not is_grounded(highlight1, {page1.url: page1})
+
+    page2 = _page(
+        "https://b.example/", "It is not the cheapest phone on the market."
+    )
+    highlight2 = Highlight(
+        text="x", source_url=page2.url, quote="the cheapest phone on the market"
+    )
+    assert not is_grounded(highlight2, {page2.url: page2})
+
+
+def test_non_negated_quote_still_grounded():
+    """Sanity check that the negation-proximity check doesn't start
+    rejecting ordinary, non-negated quotes."""
+    page = _page("https://a.example/", "It does support wireless charging fully.")
+    highlight = Highlight(
+        text="x", source_url=page.url, quote="support wireless charging fully"
+    )
+    assert is_grounded(highlight, {page.url: page})

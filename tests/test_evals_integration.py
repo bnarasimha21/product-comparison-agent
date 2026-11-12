@@ -116,6 +116,22 @@ def test_sparse_pair_still_produces_a_result_without_crashing():
         assert 0.0 <= metrics[key] <= 1.0
 
 
+def test_fake_mode_fact_recall_and_ground_rate_are_perfect():
+    """Regression for the third adversarial review: the fake backend only
+    ever quotes golden facts verbatim, so every fixture's fact_recall and
+    ground_rate must be exactly 1.0 in fake mode. A change to the
+    grounding floor (comparison/grounding.py) that starts rejecting
+    genuine short factual quotes silently regresses this -- previously it
+    went undetected until a human diffed eval output by hand (fact_recall
+    1.00 -> 0.45, ground_rate 1.00 -> 0.48). This test makes that kind of
+    regression a CI failure instead."""
+    rows = run_all("fake")
+    assert rows, "expected at least one fixture"
+    for row in rows:
+        assert row["fact_recall"] == 1.0, f"{row['fixture']}: fact_recall={row['fact_recall']}"
+        assert row["ground_rate"] == 1.0, f"{row['fixture']}: ground_rate={row['ground_rate']}"
+
+
 def test_results_file_is_written(tmp_path, monkeypatch):
     import evals.run as run_module
 

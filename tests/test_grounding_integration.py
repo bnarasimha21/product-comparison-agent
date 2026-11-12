@@ -53,7 +53,7 @@ async def test_fabricated_highlights_are_dropped_and_ground_rate_reported(local_
                 json.dumps(
                     {
                         "highlights": [
-                            {"text": "weight", "quote": "per month and weighs 180 grams"},
+                            {"text": "weight", "quote": "weighs 180 grams"},
                             {"text": "fabricated", "quote": "GadgetMax can fly unaided"},
                         ]
                     }
@@ -80,7 +80,7 @@ async def test_fabricated_highlights_are_dropped_and_ground_rate_reported(local_
     assert "WidgetPro cures the common cold" not in grounded_quotes_1
     assert "GadgetMax can fly unaided" not in grounded_quotes_2
     assert "WidgetPro costs $19 per month" in grounded_quotes_1
-    assert "per month and weighs 180 grams" in grounded_quotes_2
+    assert "weighs 180 grams" in grounded_quotes_2
 
     # 1 of 2 proposed highlights survived grounding on each side.
     assert report1.ground_rate == 0.5
