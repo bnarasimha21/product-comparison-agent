@@ -1,0 +1,20 @@
+# Per-million-token USD prices, used by comparison/trace.py to estimate run
+# cost. A model missing here gets a blank (None) cost rather than a guess.
+#
+# Source: https://inference.do-ai.run (DigitalOcean serverless inference
+# pricing page), as of 2026-11-03. Update the "as_of" date whenever a price
+# below changes.
+as_of: "2026-11-03"
+models:
+  openai/gpt-4o-mini:
+    input_per_million_usd: 0.15
+    output_per_million_usd: 0.60
+    source: "https://openai.com/api/pricing/"
+  do/llama3.3-70b-instruct:
+    input_per_million_usd: 0.15
+    output_per_million_usd: 0.18
+    source: "https://inference.do-ai.run"
+  fake/fake-1:
+    input_per_million_usd: 0.0
+    output_per_million_usd: 0.0
+    source: "not a real model; used by tests and --llm fake"
