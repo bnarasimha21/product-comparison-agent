@@ -53,7 +53,7 @@ async def test_flow_produces_exact_num_highlights_rows(local_server):
                     {
                         "highlights": [
                             {"text": "price", "quote": "WidgetPro costs $19 per month"},
-                            {"text": "shipping", "quote": "per month and ships worldwide"},
+                            {"text": "shipping", "quote": "ships worldwide"},
                         ]
                     }
                 )
@@ -63,7 +63,7 @@ async def test_flow_produces_exact_num_highlights_rows(local_server):
                     {
                         "highlights": [
                             {"text": "price", "quote": "GadgetMax costs $25 per month"},
-                            {"text": "app", "quote": "per month and has a mobile app"},
+                            {"text": "app", "quote": "has a mobile app"},
                         ]
                     }
                 )
@@ -98,8 +98,8 @@ async def test_flow_produces_exact_num_highlights_rows(local_server):
 async def test_comparison_prompt_contains_both_products_highlights(local_server):
     """Asserts the comparison task was actually given both products'
     extracted highlights, by inspecting the recorded LLM call messages."""
-    url_a = local_server.add_page("/a.html", "<html><body>WidgetPro is fast and reliable.</body></html>")
-    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light and durable.</body></html>")
+    url_a = local_server.add_page("/a.html", "<html><body>WidgetPro is fast.</body></html>")
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light.</body></html>")
 
     def fetch(url, **kwargs):
         from comparison.fetch import fetch_page
@@ -111,10 +111,10 @@ async def test_comparison_prompt_contains_both_products_highlights(local_server)
             "URL Selector for WidgetPro": [_reply({"urls": [url_a]})],
             "URL Selector for GadgetMax": [_reply({"urls": [url_b]})],
             "Highlight Extractor for WidgetPro": [
-                _reply({"highlights": [{"text": "speed", "quote": "WidgetPro is fast and reliable"}]})
+                _reply({"highlights": [{"text": "speed", "quote": "WidgetPro is fast"}]})
             ],
             "Highlight Extractor for GadgetMax": [
-                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light and durable"}]})
+                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light"}]})
             ],
             "Comparison Agent": [_reply({"rows": [{"aspect": "Feel", "a_index": 1, "b_index": 1}]})],
         }
@@ -135,8 +135,8 @@ async def test_comparison_prompt_contains_both_products_highlights(local_server)
     # model-authored `text` label, so the prompt-content check below must
     # look for content unique to each product's quote, not the "speed"/
     # "weight" text labels (which are no longer fed to this prompt at all).
-    assert "reliable" in prompt_text
-    assert "durable" in prompt_text
+    assert "fast" in prompt_text
+    assert "light" in prompt_text
 
 
 @pytest.mark.asyncio
@@ -206,7 +206,7 @@ async def test_one_product_crashing_does_not_abort_the_other(local_server):
                 raise RuntimeError("simulated search provider bug")
             return self._working.search(query, n)
 
-    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light and durable.</body></html>")
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light.</body></html>")
 
     working = _build_search("WidgetPro", "GadgetMax", "https://unused.example/a.html", url_b)
     from comparison.search import query_templates
@@ -223,7 +223,7 @@ async def test_one_product_crashing_does_not_abort_the_other(local_server):
         scripts={
             "URL Selector for GadgetMax": [_reply({"urls": [url_b]})],
             "Highlight Extractor for GadgetMax": [
-                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light and durable"}]})
+                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light"}]})
             ],
             "Comparison Agent": [_reply({"rows": [{"aspect": "Feel", "a_index": None, "b_index": 1}]})],
         }
@@ -241,7 +241,7 @@ async def test_one_product_crashing_does_not_abort_the_other(local_server):
     assert "simulated search provider bug" in result.product1_error
     assert result.product2_error is None
     assert len(result.rows) == 1
-    assert result.rows[0].b_text == "GadgetMax is light and durable"
+    assert result.rows[0].b_text == "GadgetMax is light"
 
 
 @pytest.mark.asyncio
@@ -420,3 +420,58 @@ async def test_invented_url_rejected_and_retry_succeeds(local_server):
     product2_report = flow.state.product2_report
     assert product2_report is not None
     assert product2_report.error == "no search results found"
+
+
+@pytest.mark.asyncio
+async def test_row_with_both_indexes_null_is_dropped(local_server):
+    """A comparison row must not be rendered when NEITHER product has a
+    valid grounded highlight for it: a_index and b_index both null means
+    the row would be the model's own unverified `aspect` label next to two
+    "no evidence found" cells, nothing legitimate to show. Reproduced live
+    by the third adversarial review. This fixture scripts the Comparison
+    Agent to return two rows: one with real evidence on both sides, and
+    one with both indexes null; only the first must survive."""
+    url_a = local_server.add_page("/a.html", "<html><body>WidgetPro ships worldwide.</body></html>")
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax has a mobile app.</body></html>")
+
+    def fetch(url, **kwargs):
+        from comparison.fetch import fetch_page
+
+        return fetch_page(url, allow_http=True, allow_private=True)
+
+    llm = FakeLLM(
+        scripts={
+            "URL Selector for WidgetPro": [_reply({"urls": [url_a]})],
+            "URL Selector for GadgetMax": [_reply({"urls": [url_b]})],
+            "Highlight Extractor for WidgetPro": [
+                _reply({"highlights": [{"text": "shipping", "quote": "WidgetPro ships worldwide"}]})
+            ],
+            "Highlight Extractor for GadgetMax": [
+                _reply({"highlights": [{"text": "app", "quote": "GadgetMax has a mobile app"}]})
+            ],
+            "Comparison Agent": [
+                _reply(
+                    {
+                        "rows": [
+                            {"aspect": "Overview", "a_index": 1, "b_index": 1},
+                            {"aspect": "Fabricated aspect with no evidence", "a_index": None, "b_index": None},
+                        ]
+                    }
+                )
+            ],
+        }
+    )
+
+    flow = ProductComparisonFlow(
+        llm=llm, search_provider=_build_search("WidgetPro", "GadgetMax", url_a, url_b), fetch_fn=fetch
+    )
+    flow.state.request = CompareRequest(
+        product1="WidgetPro", product2="GadgetMax", num_urls=1, num_highlights=2
+    )
+    await flow.kickoff_async()
+
+    result = flow.state.result
+    assert result is not None
+    assert len(result.rows) == 1
+    assert result.rows[0].aspect == "Overview"
+    assert all(row.aspect != "Fabricated aspect with no evidence" for row in result.rows)

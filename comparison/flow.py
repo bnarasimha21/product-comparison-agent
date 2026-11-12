@@ -340,6 +340,17 @@ class ProductComparisonFlow(Flow[CompareState]):
                     highlight = report2.highlights[row.b_index - 1]
                     b_text, b_source = highlight.quote, highlight.source_url
 
+                # Drop a row entirely when NEITHER product has a valid
+                # grounded highlight for it: a_source and b_source both
+                # None means neither side resolved to a real, grounded
+                # quote, so the row would just be the model's own
+                # fabricated `aspect` label sitting next to two "no
+                # evidence found" cells -- nothing legitimate to show, so
+                # don't render it at all rather than rendering empty
+                # evidence next to an unverified claim.
+                if a_source is None and b_source is None:
+                    continue
+
                 rows.append(
                     ComparisonRow(aspect=row.aspect, a_text=a_text, a_source=a_source, b_text=b_text, b_source=b_source)
                 )
