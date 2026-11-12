@@ -206,8 +206,18 @@ async def test_comparison_prompt_contains_both_products_highlights(local_server)
     # model-authored `text` label, so the prompt-content check below must
     # look for content unique to each product's quote, not the "speed"/
     # "weight" text labels (which are no longer fed to this prompt at all).
-    assert "fast" in prompt_text
-    assert "light" in prompt_text
+    #
+    # Round-4 review: the previous version of this test checked for
+    # "light", which is ALSO a substring of the word "highlights" --
+    # itself part of the prompt's own fixed boilerplate text ("Grounded
+    # highlights for A/B...") regardless of which quotes are included. That
+    # made the assertion unable to fail even if product B's quotes were
+    # entirely removed from the prompt. "speedy" and "portable" do not
+    # overlap with "highlight(s)"/"product"/"comparison"/any other fixed
+    # scaffolding word, so they can only appear here via the actual quote
+    # content.
+    assert "speedy" in prompt_text
+    assert "portable" in prompt_text
 
 
 @pytest.mark.asyncio
