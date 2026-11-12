@@ -322,7 +322,16 @@ class ProductComparisonFlow(Flow[CompareState]):
 
         rows: list[ComparisonRow] = []
         if draft:
-            for row in draft.rows[: request.num_highlights]:
+            # Build a row for EVERY proposed row first, and only drop the
+            # empty (both-indexes-null) ones -- THEN truncate to
+            # num_highlights. Truncating draft.rows to num_highlights
+            # before dropping empties let an empty row occupying an early
+            # slot push a genuinely evidenced later row out of the final
+            # list entirely (round-4 review finding): with real evidence
+            # for rows [null/null, Ship, Weight] and num_highlights=2, the
+            # old order produced only ['Ship'] -- 'Weight' should also
+            # have survived.
+            for row in draft.rows:
                 a_text: str | None = "no evidence found"
                 a_source: str | None = None
                 b_text: str | None = "no evidence found"
@@ -354,6 +363,8 @@ class ProductComparisonFlow(Flow[CompareState]):
                 rows.append(
                     ComparisonRow(aspect=row.aspect, a_text=a_text, a_source=a_source, b_text=b_text, b_source=b_source)
                 )
+
+            rows = rows[: request.num_highlights]
 
         self._record_stage("compare", compare_started, rows=len(rows), timed_out=timed_out)
 
