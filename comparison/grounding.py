@@ -135,10 +135,15 @@ _CURRENCY_DIGIT_RE = re.compile(r"[$£€¥₹]\d|\d[$£€¥₹]")
 #
 # "cannot" is listed explicitly because `\bnot\b` does not match inside it
 # (there is no word boundary before "not" in "cannot"). "neither"/"nor"/
-# "lacks"/"hardly"/"rarely" and the two-word "fails to" / "fail to" were
+# "lack"/"hardly"/"rarely" and the two-word "fails to" / "fail to" were
 # added per round-4 review as additional real-world negation phrasing.
+# "lack" covers "lack"/"lacks"/"lacking" (round-6 review: "lacks" alone
+# missed the plain-verb and -ing forms, letting "both phones lack wireless
+# charging" and "it's lacking a headphone jack" ground as true claims).
+# "missing"/"unsupported" were added for the same reason.
 _NEGATION_RE = re.compile(
-    r"\b(?:not|no|never|without|cannot|neither|nor|lacks|hardly|rarely)\b"
+    r"\b(?:not|no|never|without|cannot|neither|nor|lacks?|lacking"
+    r"|hardly|rarely|missing|unsupported)\b"
     r"|n't"
     r"|\bfails?\s+to\b"
 )

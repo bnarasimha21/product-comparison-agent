@@ -276,6 +276,24 @@ def test_list_negation_reaches_every_item_after_first_comma():
         assert not is_grounded(highlight, {page.url: page}), quote
 
 
+def test_plain_lack_verb_forms_are_negation():
+    """Round-6 review: "lacks" was in the negation word list but the plain
+    verb "lack" and the "-ing" form "lacking" were not, so "both phones lack
+    wireless charging" and "it's lacking a headphone jack" were graded
+    GROUNDED. "missing" and "unsupported" cover the same real-world
+    phrasing."""
+    cases = [
+        ("Unfortunately, both phones lack wireless charging.", "wireless charging"),
+        ("It's lacking a headphone jack.", "a headphone jack"),
+        ("It is missing a headphone jack.", "a headphone jack"),
+        ("Wireless charging is unsupported.", "Wireless charging"),
+    ]
+    for source, quote in cases:
+        page = _page("https://a.example/", source)
+        highlight = Highlight(text="x", source_url=page.url, quote=quote)
+        assert not is_grounded(highlight, {page.url: page}), quote
+
+
 def test_no_list_negation_reaches_every_item():
     """Same failure mode with "no" instead of "lacks", and "or" instead of
     "and"."""
