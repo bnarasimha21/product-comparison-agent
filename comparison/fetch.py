@@ -5,13 +5,34 @@ Replaces the "Web Scraper" LLM agent from the original product_scraper.py
 tool does not have, see tests/test_search_fetch_integration.py). Fetching is
 now plain code: https-only by default, a size cap, a timeout, a bounded
 number of redirects, and rejection of any hop (initial URL or redirect
-target) that resolves to a private, loopback, link-local, or otherwise
-non-public address. This is the only layer that should ever see this app
-make an outbound request to an attacker-influenced URL.
+target) whose hostname resolves to anything other than an all-public set of
+addresses.
 
 allow_http and allow_private exist only so tests can point this function at
 a local fixture HTTP server. Production call sites (comparison/flow.py)
 never set them.
+
+SSRF defense, and why it is shaped this way:
+
+- Every resolved address for a hostname must be global (``ipaddress``'s
+  ``is_global``), not just one. A hostname can have multiple A/AAAA
+  records, and nothing stops one of them from being a private address a
+  misbehaving or malicious DNS answer could later hand back as *the*
+  address actually used; accepting a hostname because *any* resolved
+  address was public would leave that door open.
+- ``is_global`` is used instead of ``is_private`` because ``is_private``
+  does not cover the shared address space ``100.64.0.0/10``. That range is
+  used by Tailscale, by CGNAT, and by some cloud providers for metadata
+  endpoints (Alibaba Cloud's ``100.100.100.200`` is in it) -- exactly the
+  kind of address an SSRF would want to reach. ``is_global`` rejects it
+  along with everything ``is_private`` already covered.
+- The hostname is resolved exactly ONCE per hop, in ``_check_hop``, and the
+  validated IP address it returns is the literal address the connection is
+  opened to (an IP-pinned ``urllib3`` connection pool, with the real
+  hostname kept as the TLS SNI name / cert-verification name and as the
+  HTTP ``Host`` header). There is deliberately no second DNS lookup for an
+  attacker controlling the DNS record to race: the address checked is the
+  address connected to, for the initial URL and for every redirect hop.
 """
 
 from __future__ import annotations
@@ -20,8 +41,10 @@ import ipaddress
 import socket
 from urllib.parse import urljoin, urlparse
 
-import requests
+import certifi
+import urllib3
 from bs4 import BeautifulSoup
+from requests.utils import get_encoding_from_headers
 
 from .models import Page
 
@@ -30,6 +53,7 @@ DEFAULT_MAX_BYTES = 2_000_000
 DEFAULT_MAX_REDIRECTS = 5
 DEFAULT_MAX_EXCERPT_CHARS = 20_000
 _USER_AGENT = "product-comparison-agent/1.0 (+https://github.com/bnarasimha21/product-comparison-agent)"
+_DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 class _Rejected(Exception):
@@ -38,43 +62,98 @@ class _Rejected(Exception):
         self.reason = reason
 
 
-def _is_private_host(host: str) -> bool:
-    """True if host has no address, or every address it resolves to is
-    private/loopback/link-local/reserved/multicast."""
+def _resolve_addresses(hostname: str) -> list[str]:
+    """Resolve hostname to every distinct IP address it has, exactly once.
+
+    The caller must connect directly to one of these addresses and must
+    never call getaddrinfo on this hostname again for this hop: a second,
+    later lookup is exactly what a DNS-rebinding attack needs (answer
+    public at check time, private at connect time).
+    """
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = socket.getaddrinfo(hostname, None)
     except OSError:
-        return True
-    if not infos:
-        return True
+        return []
+    addrs: list[str] = []
+    seen: set[str] = set()
     for info in infos:
-        sockaddr = info[4]
-        ip_str = sockaddr[0]
+        ip_str = info[4][0]
+        if ip_str not in seen:
+            seen.add(ip_str)
+            addrs.append(ip_str)
+    return addrs
+
+
+def _all_global(addrs: list[str]) -> bool:
+    """True iff addrs is non-empty and every address in it is global.
+
+    See the module docstring for why this checks EVERY address (multi-record
+    DNS) and uses is_global rather than is_private (100.64.0.0/10).
+    """
+    if not addrs:
+        return False
+    for ip_str in addrs:
+        ip_str = ip_str.split("%", 1)[0]  # strip an IPv6 zone id, if present
         try:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
-            return True
-        if not (
-            addr.is_private
-            or addr.is_loopback
-            or addr.is_link_local
-            or addr.is_reserved
-            or addr.is_multicast
-            or addr.is_unspecified
-        ):
+            return False
+        if not addr.is_global:
             return False
     return True
 
 
-def _check_hop(url: str, *, allow_http: bool, allow_private: bool) -> None:
+def _check_hop(url: str, *, allow_http: bool, allow_private: bool) -> tuple[str, str, int, str]:
+    """Validate one hop and return (pinned_ip, hostname, port, path_and_query).
+
+    Resolution happens exactly once, here, and the returned IP is the exact
+    address the caller must connect to.
+    """
     parsed = urlparse(url)
     allowed_schemes = {"https"} | ({"http"} if allow_http else set())
     if parsed.scheme not in allowed_schemes:
         raise _Rejected(f"scheme not allowed: {parsed.scheme!r}")
     if not parsed.hostname:
         raise _Rejected("no host in URL")
-    if not allow_private and _is_private_host(parsed.hostname):
+
+    addrs = _resolve_addresses(parsed.hostname)
+    if not addrs:
         raise _Rejected("private or unresolvable address rejected")
+    if not allow_private and not _all_global(addrs):
+        raise _Rejected("private or unresolvable address rejected")
+
+    port = parsed.port or _DEFAULT_PORTS[parsed.scheme]
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return addrs[0], parsed.hostname, port, path
+
+
+def _host_header(hostname: str, port: int, scheme: str) -> str:
+    if port == _DEFAULT_PORTS.get(scheme):
+        return hostname
+    return f"{hostname}:{port}"
+
+
+def _build_pool(scheme: str, ip: str, port: int, hostname: str, timeout: int) -> urllib3.HTTPConnectionPool:
+    """Build a connection pool pinned to ip, the specific address _check_hop
+    already validated. For https, TLS SNI and certificate verification still
+    use the real hostname (server_hostname / assert_hostname), so a page is
+    still only accepted if its certificate is valid for the hostname the
+    user asked for -- only the socket-level connect target is pinned.
+    """
+    if scheme == "https":
+        return urllib3.HTTPSConnectionPool(
+            ip,
+            port=port,
+            timeout=timeout,
+            maxsize=1,
+            retries=False,
+            server_hostname=hostname,
+            assert_hostname=hostname,
+            ca_certs=certifi.where(),
+        )
+    return urllib3.HTTPConnectionPool(ip, port=port, timeout=timeout, maxsize=1, retries=False)
 
 
 def _extract_text(html: str) -> str:
@@ -110,67 +189,70 @@ def fetch_page(
     max_excerpt_chars: int = DEFAULT_MAX_EXCERPT_CHARS,
     allow_http: bool = False,
     allow_private: bool = False,
-    session: requests.Session | None = None,
 ) -> Page:
     """Fetch url and return readable text, or a structured failure.
 
-    Never raises for an ordinary failure (bad scheme, private address,
-    timeout, non-2xx, oversize body, too many redirects); those all come
-    back as Page(ok=False, error=...).
+    Never raises for an ordinary failure (bad scheme, private/non-global
+    address, timeout, non-2xx, oversize body, too many redirects); those all
+    come back as Page(ok=False, error=...).
     """
-    owns_session = session is None
-    session = session or requests.Session()
     current = url
-    try:
-        for _hop in range(max_redirects + 1):
-            try:
-                _check_hop(current, allow_http=allow_http, allow_private=allow_private)
-            except _Rejected as exc:
-                return Page(url=url, text="", ok=False, error=exc.reason)
+    for _hop in range(max_redirects + 1):
+        try:
+            ip, hostname, port, path = _check_hop(current, allow_http=allow_http, allow_private=allow_private)
+        except _Rejected as exc:
+            return Page(url=url, text="", ok=False, error=exc.reason)
 
+        scheme = urlparse(current).scheme
+        pool = _build_pool(scheme, ip, port, hostname, timeout)
+        try:
             try:
-                response = session.get(
-                    current,
+                response = pool.urlopen(
+                    "GET",
+                    path,
+                    headers={
+                        "Host": _host_header(hostname, port, scheme),
+                        "User-Agent": _USER_AGENT,
+                    },
                     timeout=timeout,
-                    allow_redirects=False,
-                    stream=True,
-                    headers={"User-Agent": _USER_AGENT},
+                    redirect=False,
+                    retries=False,
+                    preload_content=False,
                 )
-            except requests.RequestException as exc:
+            except Exception as exc:  # noqa: BLE001 - any connect/TLS/timeout failure is an ordinary fetch failure
                 return Page(url=url, text="", ok=False, error=f"request failed: {exc}")
 
-            if response.is_redirect or response.status_code in (301, 302, 303, 307, 308):
-                location = response.headers.get("Location")
-                response.close()
-                if not location:
-                    return Page(url=url, text="", ok=False, error="redirect with no Location header")
-                current = urljoin(current, location)
-                continue
-
-            if response.status_code != 200:
-                status = response.status_code
-                response.close()
-                return Page(url=url, text="", ok=False, error=f"HTTP {status}")
-
-            body = bytearray()
             try:
-                for chunk in response.iter_content(chunk_size=8192):
-                    body.extend(chunk)
-                    if len(body) > max_bytes:
-                        response.close()
-                        return Page(url=url, text="", ok=False, error="response exceeded size cap")
+                if response.status in (301, 302, 303, 307, 308):
+                    location = response.headers.get("Location")
+                    if not location:
+                        return Page(url=url, text="", ok=False, error="redirect with no Location header")
+                    current = urljoin(current, location)
+                    continue
+
+                if response.status != 200:
+                    return Page(url=url, text="", ok=False, error=f"HTTP {response.status}")
+
+                body = bytearray()
+                try:
+                    for chunk in response.stream(8192):
+                        body.extend(chunk)
+                        if len(body) > max_bytes:
+                            return Page(url=url, text="", ok=False, error="response exceeded size cap")
+                except Exception as exc:  # noqa: BLE001 - a mid-read failure is an ordinary fetch failure
+                    return Page(url=url, text="", ok=False, error=f"request failed: {exc}")
+
+                encoding = get_encoding_from_headers(response.headers) or "utf-8"
+                try:
+                    html = body.decode(encoding, errors="replace")
+                except (LookupError, TypeError):
+                    html = body.decode("utf-8", errors="replace")
+
+                text = _extract_text(html)[:max_excerpt_chars]
+                return Page(url=url, text=text, ok=True, error=None)
             finally:
-                response.close()
+                response.release_conn()
+        finally:
+            pool.close()
 
-            try:
-                html = body.decode(response.encoding or "utf-8", errors="replace")
-            except (LookupError, TypeError):
-                html = body.decode("utf-8", errors="replace")
-
-            text = _extract_text(html)[:max_excerpt_chars]
-            return Page(url=url, text=text, ok=True, error=None)
-
-        return Page(url=url, text="", ok=False, error="too many redirects")
-    finally:
-        if owns_session:
-            session.close()
+    return Page(url=url, text="", ok=False, error="too many redirects")
