@@ -93,14 +93,33 @@ class ProductComparisonFlow(Flow[CompareState]):
             raise ValueError("ProductComparisonFlow.search_provider must be set before kickoff")
 
         self.progress(0.0, "Starting research for both products...")
-        report1, report2 = await asyncio.gather(
+        gathered = await asyncio.gather(
             self._research_one_with_timeout(request.product1, request.num_urls, request.num_highlights),
             self._research_one_with_timeout(request.product2, request.num_urls, request.num_highlights),
+            return_exceptions=True,
         )
+        report1 = self._report_or_errored(gathered[0], request.product1)
+        report2 = self._report_or_errored(gathered[1], request.product2)
         self.state.product1_report = report1
         self.state.product2_report = report2
         self.progress(0.7, "Research complete for both products.")
         return report1, report2
+
+    @staticmethod
+    def _report_or_errored(outcome: ProductReport | BaseException, product_name: str) -> ProductReport:
+        """Turn a gather() outcome into a ProductReport, never an exception.
+
+        asyncio.gather(..., return_exceptions=True) hands back whatever
+        exception a product's pipeline raised instead of raising it itself,
+        so one product's unexpected error (a bug, a bad response shape, a
+        library exception that is not a timeout) can be turned into *that
+        product's own* partial/errored report, degrading gracefully instead
+        of aborting the other, unrelated product's already-successful
+        research (issue 6's goal) via an unhandled exception.
+        """
+        if isinstance(outcome, BaseException):
+            return ProductReport(name=product_name, error=f"research stage failed: {outcome}")
+        return outcome
 
     async def _research_one_with_timeout(
         self, product_name: str, num_urls: int, num_highlights: int
@@ -125,7 +144,17 @@ class ProductComparisonFlow(Flow[CompareState]):
         started = time.monotonic()
         results: list[SearchResult] = []
         for query in query_templates(product_name):
-            results.extend(self.search_provider.search(query, n=max(num_urls, 3)))
+            # A real SearchProvider (SerperSearch) makes a blocking HTTP
+            # call. Calling it directly inside this coroutine blocks the
+            # whole event loop for its duration, serializing the two
+            # products' searches even though research_products gathers
+            # them concurrently. asyncio.to_thread moves it off the loop,
+            # the same way the fetch stage below already does for
+            # fetch_fn.
+            page_results = await asyncio.to_thread(
+                self.search_provider.search, query, n=max(num_urls, 3)
+            )
+            results.extend(page_results)
 
         seen: set[str] = set()
         deduped: list[SearchResult] = []
@@ -233,7 +262,10 @@ class ProductComparisonFlow(Flow[CompareState]):
             inputs={
                 "product_name": product_name,
                 "page_url": page.url,
-                "page_text": page.text,
+                # Neutralize a literal "</page>"/"<page ...>" inside the
+                # page's own visible text so it cannot close this prompt's
+                # <page> delimiter early (see agents.escape_page_delimiters).
+                "page_text": agent_factory.escape_page_delimiters(page.text),
             }
         )
         self.trace["llm_calls"] += 1
@@ -281,10 +313,15 @@ class ProductComparisonFlow(Flow[CompareState]):
 
                 if row.a_index is not None and 1 <= row.a_index <= len(report1.highlights):
                     highlight = report1.highlights[row.a_index - 1]
-                    a_text, a_source = highlight.text, highlight.source_url
+                    # Render the verified quote, never the model's separate
+                    # `text` paraphrase: `text` is never checked against the
+                    # source page (see comparison/grounding.py), so showing
+                    # it would let an ungrounded claim reach the report even
+                    # though its quote passed grounding.
+                    a_text, a_source = highlight.quote, highlight.source_url
                 if row.b_index is not None and 1 <= row.b_index <= len(report2.highlights):
                     highlight = report2.highlights[row.b_index - 1]
-                    b_text, b_source = highlight.text, highlight.source_url
+                    b_text, b_source = highlight.quote, highlight.source_url
 
                 rows.append(
                     ComparisonRow(aspect=row.aspect, a_text=a_text, a_source=a_source, b_text=b_text, b_source=b_source)

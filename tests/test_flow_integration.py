@@ -90,8 +90,8 @@ async def test_flow_produces_exact_num_highlights_rows(local_server):
     result = flow.state.result
     assert result is not None
     assert len(result.rows) == 2
-    assert result.rows[0].a_text == "price"
-    assert result.rows[0].b_text == "price"
+    assert result.rows[0].a_text == "WidgetPro costs $19 per month"
+    assert result.rows[0].b_text == "GadgetMax costs $25 per month"
 
 
 @pytest.mark.asyncio
@@ -133,6 +133,111 @@ async def test_comparison_prompt_contains_both_products_highlights(local_server)
     prompt_text = str(compare_calls[0]["messages"])
     assert "speed" in prompt_text
     assert "weight" in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_product_name_with_braces_does_not_crash_agent_interpolation(local_server):
+    """A product name containing `{word}` must not crash crewai's Agent
+    role/goal template interpolation with an unhandled KeyError. crewai
+    scans an agent's already-built role/goal string for any `{identifier}`
+    pattern at kickoff and raises KeyError if `identifier` is not one of
+    the kickoff inputs -- a product name like "Widget{data}Pro" baked into
+    the role via an f-string becomes exactly such a bogus placeholder.
+    comparison/agents.py neutralizes braces (to parentheses) before they
+    reach role/goal, so the sanitized role is what FakeLLM's scripts key
+    off below."""
+    product1 = "Widget{data}Pro"
+    product2 = "Gadget}Max{"
+    url_a = local_server.add_page("/a.html", "<html><body>WidgetPro is fast.</body></html>")
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light.</body></html>")
+
+    def fetch(url, **kwargs):
+        from comparison.fetch import fetch_page
+
+        return fetch_page(url, allow_http=True, allow_private=True)
+
+    llm = FakeLLM(
+        scripts={
+            "URL Selector for Widget(data)Pro": [_reply({"urls": [url_a]})],
+            "URL Selector for Gadget)Max(": [_reply({"urls": [url_b]})],
+            "Highlight Extractor for Widget(data)Pro": [
+                _reply({"highlights": [{"text": "speed", "quote": "WidgetPro is fast"}]})
+            ],
+            "Highlight Extractor for Gadget)Max(": [
+                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light"}]})
+            ],
+            "Comparison Agent": [_reply({"rows": [{"aspect": "Feel", "a_index": 1, "b_index": 1}]})],
+        }
+    )
+
+    flow = ProductComparisonFlow(
+        llm=llm, search_provider=_build_search(product1, product2, url_a, url_b), fetch_fn=fetch
+    )
+    flow.state.request = CompareRequest(product1=product1, product2=product2, num_urls=1, num_highlights=1)
+    await flow.kickoff_async()
+
+    result = flow.state.result
+    assert result is not None
+    assert result.product1_error is None
+    assert result.product2_error is None
+    assert len(result.rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_one_product_crashing_does_not_abort_the_other(local_server):
+    """asyncio.gather without return_exceptions=True lets ANY exception in
+    one product's pipeline cancel/abort the sibling task too, defeating
+    issue 6's graceful-degradation goal. Simulates a non-timeout crash
+    (e.g. a library bug) in product1's search stage and asserts product2's
+    research still completes normally, with product1 degraded to an
+    errored report instead of blowing up the whole flow."""
+
+    class _CrashingThenWorkingSearch:
+        def __init__(self, crash_queries: set[str], working: FixtureSearch) -> None:
+            self._crash_queries = crash_queries
+            self._working = working
+
+        def search(self, query, n):
+            if query in self._crash_queries:
+                raise RuntimeError("simulated search provider bug")
+            return self._working.search(query, n)
+
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax is light.</body></html>")
+
+    working = _build_search("WidgetPro", "GadgetMax", "https://unused.example/a.html", url_b)
+    from comparison.search import query_templates
+
+    crash_queries = set(query_templates("WidgetPro"))
+    search_provider = _CrashingThenWorkingSearch(crash_queries, working)
+
+    def fetch(url, **kwargs):
+        from comparison.fetch import fetch_page
+
+        return fetch_page(url, allow_http=True, allow_private=True)
+
+    llm = FakeLLM(
+        scripts={
+            "URL Selector for GadgetMax": [_reply({"urls": [url_b]})],
+            "Highlight Extractor for GadgetMax": [
+                _reply({"highlights": [{"text": "weight", "quote": "GadgetMax is light"}]})
+            ],
+            "Comparison Agent": [_reply({"rows": [{"aspect": "Feel", "a_index": None, "b_index": 1}]})],
+        }
+    )
+
+    flow = ProductComparisonFlow(llm=llm, search_provider=search_provider, fetch_fn=fetch)
+    flow.state.request = CompareRequest(
+        product1="WidgetPro", product2="GadgetMax", num_urls=1, num_highlights=1
+    )
+    await flow.kickoff_async()
+
+    result = flow.state.result
+    assert result is not None
+    assert result.product1_error is not None
+    assert "simulated search provider bug" in result.product1_error
+    assert result.product2_error is None
+    assert len(result.rows) == 1
+    assert result.rows[0].b_text == "GadgetMax is light"
 
 
 @pytest.mark.asyncio
