@@ -132,6 +132,14 @@ def test_second_run_over_same_request_hits_cache_with_zero_network_or_llm_calls(
     counter["fetch_calls"] = 0
 
     class ExplodingLLM:
+        # Same model identity as first_llm (FakeLLM defaults to
+        # "fake/fake-1"): result_cache_key now includes model_id (issue 5a),
+        # so a *different* model identity here would legitimately be a
+        # fresh cache miss. This keeps the model identity constant, which
+        # isolates what this test actually checks: an identical
+        # request+model is served from cache without ever calling the LLM.
+        model = "fake/fake-1"
+
         def call(self, *args, **kwargs):
             raise AssertionError("second run must not call the LLM: result should come from cache")
 
@@ -143,6 +151,95 @@ def test_second_run_over_same_request_hits_cache_with_zero_network_or_llm_calls(
     assert counter["fetch_calls"] == 0
     assert second_result.rows == first_result.rows
     assert second_result.product1_name == first_result.product1_name
+
+
+def test_cache_hit_miss_counters_in_trace_are_scoped_to_one_request(tmp_path, local_server):
+    """DiskCache.hits/.misses are plain instance attributes that accumulate
+    for as long as the DiskCache instance lives. A real server (main.py)
+    builds exactly one DiskCache and reuses it for every request for the
+    life of the process, so a naive `cache.hits`/`cache.misses` read inside
+    compare() would report the running total since the server started, not
+    this one request's own activity. Simulate that long-lived-instance
+    scenario here: reuse a single DiskCache across two DIFFERENT requests
+    and confirm the second request's own trace only reflects what the
+    second request itself did, not an ever-growing cumulative count
+    carried over from the first.
+    """
+    url_a = local_server.add_page("/a.html", "<html><body>WidgetPro costs $19 per month.</body></html>")
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax costs $25 per month.</body></html>")
+    url_c = local_server.add_page("/c.html", "<html><body>ThirdThing costs $9 per month.</body></html>")
+
+    def fetch(url, **kwargs):
+        return fetch_page(url, allow_http=True, allow_private=True)
+
+    def make_llm(product1_quote, product2_quote):
+        return FakeLLM(
+            scripts={
+                "URL Selector for WidgetPro": [json.dumps({"urls": [url_a]})],
+                "URL Selector for GadgetMax": [json.dumps({"urls": [url_b]})],
+                "URL Selector for ThirdThing": [json.dumps({"urls": [url_c]})],
+                "Highlight Extractor for WidgetPro": [
+                    json.dumps({"highlights": [{"text": "price", "quote": product1_quote}]})
+                ],
+                "Highlight Extractor for GadgetMax": [
+                    json.dumps({"highlights": [{"text": "price", "quote": product2_quote}]})
+                ],
+                "Highlight Extractor for ThirdThing": [
+                    json.dumps({"highlights": [{"text": "price", "quote": "ThirdThing costs $9 per month"}]})
+                ],
+                "Comparison Agent": [
+                    json.dumps({"rows": [{"aspect": "Price", "a_index": 1, "b_index": 1}]})
+                ],
+            }
+        )
+
+    cache = DiskCache(tmp_path / "cache")  # one long-lived instance, like main.py's module-level _cache
+
+    search_ab = FixtureSearch(
+        {
+            **{q: [SearchResult(title="a", url=url_a, snippet="")] for q in query_templates("WidgetPro")},
+            **{q: [SearchResult(title="b", url=url_b, snippet="")] for q in query_templates("GadgetMax")},
+        }
+    )
+    request_ab = CompareRequest(product1="WidgetPro", product2="GadgetMax", num_urls=1, num_highlights=1)
+    compare(
+        request_ab,
+        llm=make_llm("WidgetPro costs $19 per month", "GadgetMax costs $25 per month"),
+        search_provider=search_ab,
+        fetch_fn=fetch,
+        cache=cache,
+    )
+    # cache now has nonzero hits/misses accumulated from the first request.
+    assert cache.misses > 0
+
+    search_cb = FixtureSearch(
+        {
+            **{q: [SearchResult(title="c", url=url_c, snippet="")] for q in query_templates("ThirdThing")},
+            **{q: [SearchResult(title="b", url=url_b, snippet="")] for q in query_templates("GadgetMax")},
+        }
+    )
+    request_cb = CompareRequest(product1="ThirdThing", product2="GadgetMax", num_urls=1, num_highlights=1)
+    second_result = compare(
+        request_cb,
+        llm=make_llm("ThirdThing costs $9 per month", "GadgetMax costs $25 per month"),
+        search_provider=search_cb,
+        fetch_fn=fetch,
+        cache=cache,
+    )
+
+    # The second request shares GadgetMax with the first (its search/fetch
+    # entries are already cached) but is a brand-new product pairing, so
+    # its own result was never cached: a fresh result-cache miss, plus at
+    # least one fresh search/fetch miss for ThirdThing, is expected. What
+    # must NOT happen is this request's reported counters including the
+    # first request's own activity.
+    reported_misses = second_result.trace["cache_misses"]
+    reported_hits = second_result.trace["cache_hits"]
+    assert reported_misses < cache.misses, (
+        "trace.cache_misses must be this request's own count, not the "
+        "DiskCache instance's running total since process start"
+    )
+    assert reported_hits <= cache.hits
 
 
 def test_trace_json_round_trips(tmp_path, local_server):
@@ -224,5 +321,5 @@ async def test_partial_result_when_one_product_page_fails(local_server):
     assert result.product1_error is None
     assert result.product2_error == "no page could be fetched"
     assert len(result.rows) == 1
-    assert result.rows[0].a_text == "price"
+    assert result.rows[0].a_text == "WidgetPro costs $19 per month"
     assert result.rows[0].b_text == "no evidence found"

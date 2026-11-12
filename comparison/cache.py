@@ -88,7 +88,16 @@ class CachingSearchProvider:
 
 
 def caching_fetch(cache: DiskCache, fetch_fn: Callable[..., Any]) -> Callable[..., Any]:
-    """Wraps a fetch_page-shaped callable; identical URLs hit the cache."""
+    """Wraps a fetch_page-shaped callable; identical URLs hit the cache.
+
+    A failed fetch (page.ok is False, e.g. a transient network error, a
+    timeout, a site that happened to be down) is deliberately never
+    written to the cache. DiskCache has a single process-wide TTL
+    (default 24h); caching a failure at that TTL would mean a one-off
+    network blip makes every subsequent run treat that URL as dead for a
+    full day, even once the real page is reachable again. Only a
+    genuinely fetched page (ok=True) is worth remembering.
+    """
     from .models import Page
 
     def wrapped(url: str, **kwargs: Any) -> Any:
@@ -97,24 +106,37 @@ def caching_fetch(cache: DiskCache, fetch_fn: Callable[..., Any]) -> Callable[..
         if cached is not None:
             return Page(**cached)
         page = fetch_fn(url, **kwargs)
-        cache.set(key, page.model_dump())
+        if page.ok:
+            cache.set(key, page.model_dump())
         return page
 
     return wrapped
 
 
-def result_cache_key(request: Any) -> str:
-    """A stable key for a final ComparisonResult, from the normalized request.
+def result_cache_key(request: Any, model_id: str | None = None) -> str:
+    """A stable key for a final ComparisonResult, from the normalized
+    request AND the model that would answer it.
 
     Deliberately order-sensitive: (A, B) and (B, A) are different cache
     entries, not the same one. An order-insensitive key would make the
     order-swap consistency eval (issue 5) read a cached (A, B) result back
     out for a (B, A) request, which would hide exactly the inconsistency
     that eval exists to catch.
+
+    model_id is deliberately part of the key too: without it, a request
+    made with one LLM (e.g. a cheap/fast model, or the fake backend in an
+    eval run) would be served back verbatim to a later, otherwise-identical
+    request made with a different, better model -- silently returning a
+    stale answer from the wrong model instead of ever calling the new one.
+    model_id is None when it is not known (no llm given, or the llm's
+    identity could not be read); that still produces a stable, distinct
+    key segment rather than crashing, it is just lumped together with
+    every other "unknown model" request.
     """
     from .models import CompareRequest
 
     assert isinstance(request, CompareRequest)
     product1 = request.product1.strip().casefold()
     product2 = request.product2.strip().casefold()
-    return f"result:{product1}|{product2}|{request.num_urls}|{request.num_highlights}"
+    model_part = model_id or "unknown-model"
+    return f"result:{product1}|{product2}|{request.num_urls}|{request.num_highlights}|{model_part}"

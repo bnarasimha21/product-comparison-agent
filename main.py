@@ -7,9 +7,11 @@ dependency and can be imported and tested without starting a UI.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import gradio as gr
+from crewai import LLM
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
@@ -23,6 +25,17 @@ load_dotenv()
 _PRICING_PATH = Path(__file__).parent / "pricing.yaml"
 _CACHE_DIR = Path(__file__).parent / ".cache" / "comparison"
 _cache = DiskCache(_CACHE_DIR)
+
+# comparison/pipeline.py reads model_id off of `llm.model` (see
+# _run_flow's `getattr(llm, "model", None)`) to look up a per-token price
+# in pricing.yaml and compute a run's cost. Passing llm=None all the way
+# through (the old behaviour) left model_id -- and therefore cost --
+# always blank, even though a real model answered every call: crewai's
+# own Agent(llm=None) default is resolved deep inside each Agent, not
+# visible back here. Building one real, named LLM here and passing it
+# through is what makes cost reporting work at all.
+_MODEL_ID = os.environ.get("MODEL_ID", "openai/gpt-4o-mini")
+_llm = LLM(model=_MODEL_ID)
 
 
 def product_comparison(
@@ -46,7 +59,20 @@ def product_comparison(
     def report_progress(fraction: float, message: str) -> None:
         progress(fraction, desc=message)
 
-    result = compare(request, progress=report_progress, cache=_cache, pricing_path=_PRICING_PATH)
+    try:
+        result = compare(
+            request, llm=_llm, progress=report_progress, cache=_cache, pricing_path=_PRICING_PATH
+        )
+    except Exception as exc:  # noqa: BLE001 -- last-resort guard, see comment below
+        # comparison/flow.py already isolates one product's crash from the
+        # other (asyncio.gather(..., return_exceptions=True)) and bounds
+        # each stage with a timeout, but neither covers every failure mode:
+        # a bug in the comparison stage itself, a cache/disk error, or a
+        # crewai/library exception raised before the flow even starts. Any
+        # of those must render a visible error in the UI, not crash this
+        # Gradio callback and take the whole running server down with it.
+        error_html = f"<p class='error'>Comparison failed: {exc}</p>"
+        return error_html, "{}"
     return render_html(result), json.dumps(result.trace or {}, indent=2)
 
 
