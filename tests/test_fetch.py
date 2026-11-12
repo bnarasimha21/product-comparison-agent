@@ -96,6 +96,52 @@ def test_hidden_text_is_dropped(local_server):
     assert "Also hidden text" not in page.text
 
 
+def test_nested_hidden_element_does_not_crash(local_server):
+    """Regression for the showstopper: a hidden parent containing a child
+    tag used to crash _extract_text with AttributeError, because the old
+    code called tag.decompose() on the parent while still iterating the
+    very find_all(True) result list that contained the not-yet-visited
+    child -- decompose() wipes the child's own attrs out from under it, so
+    the next .get()/.has_attr() call on that child raised
+    'NoneType' object has no attribute 'get'. Reproduced live against
+    en.wikipedia.org/wiki/IPhone, apple.com/iphone, and github.com, so this
+    is not an edge case for real product pages. Fetching must now succeed
+    and must drop every bit of the hidden subtree's text."""
+    html = (
+        "<html><body>"
+        "<p>Visible claim: price is $10.</p>"
+        "<div hidden><span>Hidden child span text</span><b>hidden bold text</b></div>"
+        "<div style='display:none'><p><em>nested hidden emphasis</em></p></div>"
+        "</body></html>"
+    )
+    url = local_server.add_page("/nested-hidden.html", html)
+    page = fetch_page(url, allow_http=True, allow_private=True)
+    assert page.ok
+    assert "Visible claim" in page.text
+    assert "Hidden child span text" not in page.text
+    assert "hidden bold text" not in page.text
+    assert "nested hidden emphasis" not in page.text
+
+
+def test_bad_port_rejected_as_ordinary_failure():
+    """A malformed URL with an out-of-range port used to raise an unhandled
+    ValueError from parsed.port (accessed lazily by urllib.parse), instead
+    of returning the same kind of structured Page(ok=False, error=...)
+    every other fetch failure mode already returns."""
+    page = fetch_page("https://example.com:99999/", allow_http=True, allow_private=True)
+    assert not page.ok
+    assert "malformed URL" in page.error
+
+
+def test_malformed_ipv6_url_rejected_as_ordinary_failure():
+    """An unterminated IPv6 literal makes urlparse() itself raise ValueError
+    at parse time (before .port is ever touched); this must also come back
+    as an ordinary Page(ok=False, ...) rather than an unhandled exception."""
+    page = fetch_page("https://[::1/", allow_http=True, allow_private=True)
+    assert not page.ok
+    assert "malformed URL" in page.error
+
+
 def test_script_and_style_dropped(local_server):
     html = (
         "<html><head><style>body{color:red}</style></head><body>"

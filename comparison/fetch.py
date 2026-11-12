@@ -109,24 +109,36 @@ def _check_hop(url: str, *, allow_http: bool, allow_private: bool) -> tuple[str,
     Resolution happens exactly once, here, and the returned IP is the exact
     address the caller must connect to.
     """
-    parsed = urlparse(url)
+    # urlparse() itself can raise ValueError on a malformed URL (e.g. an
+    # unterminated IPv6 literal like "https://[::1/"), and parsed.port
+    # raises ValueError on an out-of-range port (e.g. ":99999"). Both must
+    # become an ordinary _Rejected failure -- the same kind of structured
+    # result every other failure mode in this function already returns --
+    # not an unhandled exception that escapes fetch_page.
+    try:
+        parsed = urlparse(url)
+        port = parsed.port
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise _Rejected(f"malformed URL: {exc}") from exc
+
     allowed_schemes = {"https"} | ({"http"} if allow_http else set())
     if parsed.scheme not in allowed_schemes:
         raise _Rejected(f"scheme not allowed: {parsed.scheme!r}")
-    if not parsed.hostname:
+    if not hostname:
         raise _Rejected("no host in URL")
 
-    addrs = _resolve_addresses(parsed.hostname)
+    addrs = _resolve_addresses(hostname)
     if not addrs:
         raise _Rejected("private or unresolvable address rejected")
     if not allow_private and not _all_global(addrs):
         raise _Rejected("private or unresolvable address rejected")
 
-    port = parsed.port or _DEFAULT_PORTS[parsed.scheme]
+    port = port or _DEFAULT_PORTS[parsed.scheme]
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
-    return addrs[0], parsed.hostname, port, path
+    return addrs[0], hostname, port, path
 
 
 def _host_header(hostname: str, port: int, scheme: str) -> str:
@@ -167,15 +179,37 @@ def _extract_text(html: str) -> str:
     reader never saw.
     """
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style"]):
+    for tag in list(soup(["script", "style"])):
         tag.decompose()
+
+    # Collect every element to remove BEFORE removing any of them. Calling
+    # .decompose() on a tag while still iterating the very find_all(True)
+    # result that produced it is what crashes: decompose() clears
+    # __dict__ on every descendant too (see bs4's Tag.decompose), so once a
+    # hidden parent is decomposed, a nested child tag still waiting in this
+    # loop's results list has had its own .attrs wiped out from under it --
+    # the next .get(...)/.has_attr(...) call on that child then blows up
+    # with AttributeError, because the attribute the method needs no
+    # longer exists on the object at all. Separating "find what to remove"
+    # from "remove it" means every .get()/.has_attr() call below always
+    # runs against a still-intact tree.
+    to_remove = []
     for tag in soup.find_all(True):
         style = (tag.get("style") or "").lower()
         if "display:none" in style.replace(" ", "") or "visibility:hidden" in style.replace(" ", ""):
-            tag.decompose()
+            to_remove.append(tag)
             continue
         if tag.has_attr("hidden"):
+            to_remove.append(tag)
+
+    for tag in to_remove:
+        # A tag whose own ancestor was already decomposed earlier in this
+        # same pass (e.g. <div hidden><span hidden>...) has already been
+        # removed from the tree; skip it rather than decompose a tag with
+        # no parent left to detach from.
+        if tag.parent is not None:
             tag.decompose()
+
     text = soup.get_text(separator=" ")
     return " ".join(text.split())
 
