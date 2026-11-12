@@ -202,3 +202,114 @@ def test_non_negated_quote_still_grounded():
         text="x", source_url=page.url, quote="support wireless charging fully"
     )
     assert is_grounded(highlight, {page.url: page})
+
+
+# --- Round-4 review fixtures: clause/sentence-boundary negation rework ---
+
+
+def test_curly_apostrophe_negation_rejected():
+    """A curly right single quotation mark (U+2019) in "doesn't" must be
+    normalized to a straight apostrophe before the negation regex runs, so
+    this is caught exactly like the straight-quote version."""
+    page = _page("https://a.example/", "It doesn’t support wireless charging.")
+    highlight = Highlight(text="x", source_url=page.url, quote="support wireless charging")
+    assert not is_grounded(highlight, {page.url: page})
+
+
+def test_cannot_negation_rejected():
+    """"cannot" must be caught as its own negation word -- `\\bnot\\b`
+    alone does not match inside "cannot" since there's no word boundary
+    before "not" there."""
+    page = _page("https://a.example/", "This device cannot connect to 5GHz networks.")
+    highlight = Highlight(text="x", source_url=page.url, quote="connect to 5ghz networks")
+    assert not is_grounded(highlight, {page.url: page})
+
+
+def test_abbreviation_period_quote_not_falsely_rejected():
+    """A quote containing an abbreviation period ("U.S.") with no actual
+    negation nearby must still ground -- the clause splitter must not
+    choke on the period inside the quote itself."""
+    page = _page("https://a.example/", "It ships with the U.S. charger adapter.")
+    highlight = Highlight(text="x", source_url=page.url, quote="ships with the u.s. charger adapter")
+    assert is_grounded(highlight, {page.url: page})
+
+
+def test_decimal_number_quote_not_falsely_rejected():
+    """A quote containing a decimal ("v2.0") with no actual negation
+    nearby must still ground."""
+    page = _page("https://a.example/", "It supports v2.0 noise cancellation on both earbuds.")
+    highlight = Highlight(text="x", source_url=page.url, quote="supports v2.0 noise cancellation")
+    assert is_grounded(highlight, {page.url: page})
+
+
+def test_comma_separated_true_quote_still_grounded():
+    """The exact "commas aren't a cut point" bypass from the round-4
+    review: "No hidden fees" is a separate, true claim ahead of a comma,
+    not a negation of the quote that follows it. The clause boundary must
+    stop at the comma so "No hidden fees, it costs $19 per month" doesn't
+    get the real "costs $19 per month" quote rejected just because an
+    unrelated "No" sits a few words further back in the same sentence."""
+    page = _page("https://a.example/", "No hidden fees, it costs $19 per month.")
+    highlight = Highlight(text="x", source_url=page.url, quote="costs $19 per month")
+    assert is_grounded(highlight, {page.url: page})
+
+
+def test_trailing_negation_after_quote_rejected():
+    """The round-4 reviewer's example: the negation follows the quote,
+    separated by commas, rather than preceding it. "supports wireless
+    charging" is a real substring and nothing immediately before it is
+    negated, but the rest of the sentence after it ("...which is not
+    true") negates the claim, so it must still be rejected."""
+    page = _page(
+        "https://a.example/",
+        "It supports wireless charging, or so the ad claims, which is not true.",
+    )
+    highlight = Highlight(text="x", source_url=page.url, quote="supports wireless charging")
+    assert not is_grounded(highlight, {page.url: page})
+
+
+def test_negation_flip_cases_still_rejected_after_rework():
+    """The two original round-3 negation-flip cases must still be rejected
+    after the clause-boundary rework (not just under the old fixed-window
+    approach)."""
+    page1 = _page("https://a.example/", "It does not support wireless charging at all.")
+    highlight1 = Highlight(text="x", source_url=page1.url, quote="support wireless charging at all")
+    assert not is_grounded(highlight1, {page1.url: page1})
+
+    page2 = _page("https://b.example/", "It is not the cheapest phone on the market.")
+    highlight2 = Highlight(text="x", source_url=page2.url, quote="the cheapest phone on the market")
+    assert not is_grounded(highlight2, {page2.url: page2})
+
+
+def test_page_number_boilerplate_with_digit_still_not_grounded():
+    """Round-4 review: a digit next to a stopword/filler word must not
+    pass the floor just because a digit is present. "weighs 171 grams" /
+    "6.1-inch display" must still pass (covered elsewhere) since
+    "grams"/"inch" are substantive, not filler."""
+    page = _page("https://a.example/", "Page 1 of 2. All rights reserved. 2024.")
+    for quote in ("page 1 of 2", "all rights reserved. 2024"):
+        highlight = Highlight(text="x", source_url=page.url, quote=quote)
+        assert not is_grounded(highlight, {page.url: page}), quote
+
+
+def test_distinct_drop_reasons():
+    """Round-4 review: floor-rejected, negation-rejected and
+    not-found-verbatim must each get their own accurate reason string, not
+    all be lumped under "not found verbatim in fetched page"."""
+    from comparison.grounding import ground_highlights
+
+    page = _page("https://a.example/", "It does not support wireless charging at all.")
+    floor_rejected = Highlight(text="x", source_url=page.url, quote="on sale")
+    negation_rejected = Highlight(
+        text="x", source_url=page.url, quote="support wireless charging at all"
+    )
+    not_verbatim = Highlight(text="x", source_url=page.url, quote="made up claim entirely")
+
+    _, dropped = ground_highlights([floor_rejected, negation_rejected, not_verbatim], {page.url: page})
+    reasons = {d["quote"]: d["reason"] for d in dropped}
+
+    assert "floor" in reasons["on sale"]
+    assert "negat" in reasons["support wireless charging at all"]
+    assert "verbatim" in reasons["made up claim entirely"]
+    # All three reasons must be distinct from each other.
+    assert len(set(reasons.values())) == 3
