@@ -142,6 +142,56 @@ def test_malformed_ipv6_url_rejected_as_ordinary_failure():
     assert "malformed URL" in page.error
 
 
+def test_zero_port_rejected_as_malformed():
+    """An explicit ':0' port parses to the int 0, which is falsy -- `port or
+    DEFAULT_PORT` would silently treat that the same as "no port given" and
+    fall back to the scheme default instead of rejecting it. Port 0 is not
+    a usable TCP port, so it must be rejected the same as any other
+    malformed port."""
+    page = fetch_page("https://example.com:0/", allow_http=True, allow_private=True)
+    assert not page.ok
+    assert "port" in page.error
+
+
+def test_redirect_with_malformed_location_rejected_as_ordinary_failure(local_server):
+    """A redirect whose Location header is a malformed URL (e.g. an
+    unterminated IPv6 literal) makes urljoin() itself raise ValueError. This
+    call site is reached only when following a redirect, so it is not
+    covered by the try/except guarding the initial URL parse in
+    _check_hop -- it needs, and now has, its own guard, so this comes back
+    as an ordinary Page(ok=False, ...) instead of an uncaught exception."""
+    start = local_server.add_redirect("/start.html", "https://[::1/")
+    page = fetch_page(start, allow_http=True, allow_private=True)
+    assert not page.ok
+    assert "malformed redirect location" in page.error
+
+
+def test_dns_label_with_empty_component_rejected_as_ordinary_failure():
+    """A hostname with an empty label (e.g. 'a..b.com', from doubled dots)
+    fails IDNA encoding inside socket.getaddrinfo with
+    `UnicodeError: encoding with 'idna' codec failed`, not an OSError. The
+    old except clause only caught OSError, so this escaped fetch_page as an
+    uncaught exception instead of becoming an ordinary failure result."""
+    page = fetch_page("https://a..b.com/", allow_http=True, allow_private=True)
+    assert not page.ok
+    assert "private" in page.error
+
+
+def test_dns_hostname_starting_with_dot_rejected_as_ordinary_failure():
+    page = fetch_page("https://.com/", allow_http=True, allow_private=True)
+    assert not page.ok
+    assert "private" in page.error
+
+
+def test_dns_label_over_63_chars_rejected_as_ordinary_failure():
+    """A single DNS label over 63 characters also fails IDNA encoding with
+    UnicodeError, the same class of failure as the empty-label case above."""
+    long_label = "a" * 64
+    page = fetch_page(f"https://{long_label}.example.com/", allow_http=True, allow_private=True)
+    assert not page.ok
+    assert "private" in page.error
+
+
 def test_script_and_style_dropped(local_server):
     html = (
         "<html><head><style>body{color:red}</style></head><body>"

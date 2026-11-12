@@ -72,7 +72,15 @@ def _resolve_addresses(hostname: str) -> list[str]:
     """
     try:
         infos = socket.getaddrinfo(hostname, None)
-    except OSError:
+    except (OSError, UnicodeError):
+        # OSError covers the ordinary "name or service not known" case.
+        # UnicodeError is raised separately: a malformed hostname (an
+        # empty label like "a..b.com" or ".com", or a label over 63
+        # characters) fails IDNA encoding inside getaddrinfo with
+        # `UnicodeError: encoding with 'idna' codec failed` before any
+        # actual DNS lookup happens, and that is not an OSError subclass.
+        # Both must become an ordinary "no addresses" result here, never
+        # an exception that escapes fetch_page.
         return []
     addrs: list[str] = []
     seen: set[str] = set()
@@ -134,7 +142,16 @@ def _check_hop(url: str, *, allow_http: bool, allow_private: bool) -> tuple[str,
     if not allow_private and not _all_global(addrs):
         raise _Rejected("private or unresolvable address rejected")
 
-    port = port or _DEFAULT_PORTS[parsed.scheme]
+    # parsed.port is None when the URL has no explicit port (use the
+    # scheme default), but an *explicit* ":0" parses to the int 0, which
+    # is falsy -- `port or _DEFAULT_PORTS[...]` would silently treat that
+    # the same as "no port specified" and connect to the default port
+    # instead. Port 0 is not a usable TCP port to connect to, so treat it
+    # as malformed input, the same as any other invalid port.
+    if port is None:
+        port = _DEFAULT_PORTS[parsed.scheme]
+    elif port == 0:
+        raise _Rejected("invalid port: 0")
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
@@ -206,8 +223,12 @@ def _extract_text(html: str) -> str:
         # A tag whose own ancestor was already decomposed earlier in this
         # same pass (e.g. <div hidden><span hidden>...) has already been
         # removed from the tree; skip it rather than decompose a tag with
-        # no parent left to detach from.
-        if tag.parent is not None:
+        # no parent left to detach from. `tag.decomposed` is bs4's own
+        # documented way to check this -- `tag.parent is not None` worked
+        # only incidentally (bs4's docs call that attribute's post-decompose
+        # state "undefined") and was safe only because bs4 is pinned to
+        # 4.13.4 here, which does have `decomposed`.
+        if not tag.decomposed:
             tag.decompose()
 
     text = soup.get_text(separator=" ")
@@ -261,7 +282,21 @@ def fetch_page(
                     location = response.headers.get("Location")
                     if not location:
                         return Page(url=url, text="", ok=False, error="redirect with no Location header")
-                    current = urljoin(current, location)
+                    # urljoin itself can raise ValueError on a malformed
+                    # Location header (e.g. an unterminated IPv6 literal
+                    # like "https://[::1/"), just like urlparse can inside
+                    # _check_hop. This call site is reached only when
+                    # following a redirect, so it is not covered by the
+                    # same try/except guarding the initial URL parse; it
+                    # needs its own, so a bad Location header becomes an
+                    # ordinary Page(ok=False, ...) rather than an
+                    # uncaught exception escaping fetch_page.
+                    try:
+                        current = urljoin(current, location)
+                    except ValueError as exc:
+                        return Page(
+                            url=url, text="", ok=False, error=f"malformed redirect location: {exc}"
+                        )
                     continue
 
                 if response.status != 200:
