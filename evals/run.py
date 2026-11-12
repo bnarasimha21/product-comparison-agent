@@ -30,6 +30,19 @@ from .metrics import (
 RESULTS_DIR = Path(__file__).parent / "results"
 
 
+def _avg_or_none(*values: float | None) -> float | None:
+    """Average the non-None values; None if every value given is None.
+
+    Used for ground_rate, which is itself None ("n/a") whenever a run had
+    nothing proposed to ground -- that must not silently become a 0 or a 1
+    when averaged across the two order-swap runs.
+    """
+    present = [v for v in values if v is not None]
+    if not present:
+        return None
+    return sum(present) / len(present)
+
+
 def run_fixture(fixture: Fixture, llm_name: str) -> dict:
     search_provider = build_search_provider(fixture)
     fetch_fn = build_fetch_fn(fixture)
@@ -60,14 +73,15 @@ def run_fixture(fixture: Fixture, llm_name: str) -> dict:
     metrics = {
         "fixture": fixture.id,
         "fact_recall": (recall_ab + recall_ba) / 2,
-        "ground_rate": (ground_rate_metric(result_ab) + ground_rate_metric(result_ba)) / 2,
+        "ground_rate": _avg_or_none(ground_rate_metric(result_ab), ground_rate_metric(result_ba)),
         "mix_up_rate": (
             mix_up_rate(result_ab, fixture.false_facts) + mix_up_rate(result_ba, fixture.false_facts)
         )
         / 2,
         "order_swap_consistency": order_swap_consistency(result_ab, result_ba),
         "injection_resistance": (
-            injection_resistance(result_ab, []) + injection_resistance(result_ba, [])
+            injection_resistance(result_ab, fixture.all_injected_strings())
+            + injection_resistance(result_ba, fixture.all_injected_strings())
         )
         / 2,
         "count_compliance": (
@@ -89,22 +103,29 @@ def _write_report(llm_name: str, rows: list[dict]) -> Path:
     date = dt.date.today().isoformat()
     path = RESULTS_DIR / f"{date}-{llm_name}.md"
 
+    def _fmt(value: float | None) -> str:
+        return f"{value:.2f}" if value is not None else "n/a"
+
     lines = [f"# Eval results: {llm_name} ({date})", ""]
     lines.append("| fixture | fact_recall | ground_rate | mix_up_rate | order_swap | injection_resist | count_compliance |")
     lines.append("|---|---|---|---|---|---|---|")
     for row in rows:
         lines.append(
-            f"| {row['fixture']} | {row['fact_recall']:.2f} | {row['ground_rate']:.2f} | "
+            f"| {row['fixture']} | {row['fact_recall']:.2f} | {_fmt(row['ground_rate'])} | "
             f"{row['mix_up_rate']:.2f} | {row['order_swap_consistency']:.2f} | "
             f"{row['injection_resistance']:.2f} | {row['count_compliance']:.2f} |"
         )
 
-    def _avg(key: str) -> float:
-        return sum(r[key] for r in rows) / len(rows) if rows else 0.0
+    def _avg(key: str) -> float | None:
+        if not rows:
+            return None
+        if key == "ground_rate":
+            return _avg_or_none(*(r[key] for r in rows))
+        return sum(r[key] for r in rows) / len(rows)
 
     lines.append("")
     lines.append(
-        f"Averages: fact_recall={_avg('fact_recall'):.2f}, ground_rate={_avg('ground_rate'):.2f}, "
+        f"Averages: fact_recall={_avg('fact_recall'):.2f}, ground_rate={_fmt(_avg('ground_rate'))}, "
         f"mix_up_rate={_avg('mix_up_rate'):.2f}, order_swap_consistency={_avg('order_swap_consistency'):.2f}, "
         f"injection_resistance={_avg('injection_resistance'):.2f}, count_compliance={_avg('count_compliance'):.2f}"
     )

@@ -23,9 +23,17 @@ _METRIC_KEYS = [
 
 def test_all_fixtures_load_and_have_required_fields():
     fixtures = load_all_fixtures()
-    assert len(fixtures) == 6
+    assert len(fixtures) == 7
     ids = {f.id for f in fixtures}
-    assert ids == {"phones", "laptops", "saas_tools", "dev_tools", "near_identical", "sparse_pair"}
+    assert ids == {
+        "phones",
+        "laptops",
+        "saas_tools",
+        "dev_tools",
+        "near_identical",
+        "sparse_pair",
+        "injection_attempt",
+    }
     for fixture in fixtures:
         assert fixture.product1 != fixture.product2
         assert fixture.num_urls >= 1
@@ -34,10 +42,36 @@ def test_all_fixtures_load_and_have_required_fields():
 
 def test_run_all_fake_produces_metrics_in_unit_range():
     rows = run_all("fake")
-    assert len(rows) == 6
+    assert len(rows) == 7
     for row in rows:
         for key in _METRIC_KEYS:
             assert 0.0 <= row[key] <= 1.0, f"{row['fixture']}.{key} = {row[key]} out of [0,1]"
+
+
+def test_injection_attempt_fixture_moves_injection_resistance_below_one():
+    """Before this fix, run_fixture always called injection_resistance(...,
+    []) for every fixture, so the metric was hardcoded to 1.0 no matter
+    what the pipeline actually surfaced. injection_attempt.yaml plants a
+    real injected string and scripts the fake extractor to fall for it
+    (see llm_backends._highlight_extractor_reply), so this must now show
+    up as a real, non-trivial resistance score below 1.0."""
+    fixtures = load_all_fixtures()
+    fixture = next(f for f in fixtures if f.id == "injection_attempt")
+    assert fixture.all_injected_strings(), "fixture must actually carry injected content"
+    metrics = run_fixture(fixture, "fake")
+    assert metrics["injection_resistance"] < 1.0
+
+
+def test_other_fixtures_have_no_injected_strings_and_stay_fully_resistant():
+    """Fixtures that plant nothing legitimately score 1.0 -- that is no
+    longer a vacuous "always 1.0 regardless of input" result, since the
+    metric is now fed each fixture's own (possibly empty) injected_strings
+    rather than a literal [] constant for every fixture."""
+    fixtures = load_all_fixtures()
+    for fixture in fixtures:
+        if fixture.id == "injection_attempt":
+            continue
+        assert fixture.all_injected_strings() == []
 
 
 def test_order_swap_run_actually_executes_both_orders(monkeypatch):

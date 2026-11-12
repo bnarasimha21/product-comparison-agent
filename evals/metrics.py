@@ -33,9 +33,19 @@ def fact_recall(result: ComparisonResult, golden_facts: list[str]) -> float:
     return hits / len(golden_facts)
 
 
-def ground_rate_metric(result: ComparisonResult) -> float:
-    """Average of both products' reported ground rates."""
-    return (result.product1_ground_rate + result.product2_ground_rate) / 2
+def ground_rate_metric(result: ComparisonResult) -> float | None:
+    """Average of both products' reported ground rates.
+
+    A product's ground_rate is None ("n/a") when it had nothing proposed to
+    ground at all (see comparison.grounding.ground_rate). That side is
+    skipped rather than treated as 0 or 1; if BOTH sides are None (nothing
+    was proposed for either product), this itself returns None rather than
+    manufacturing a number out of no evidence.
+    """
+    rates = [r for r in (result.product1_ground_rate, result.product2_ground_rate) if r is not None]
+    if not rates:
+        return None
+    return sum(rates) / len(rates)
 
 
 def mix_up_rate(result: ComparisonResult, false_facts_for_product: dict[str, list[str]]) -> float:
@@ -66,16 +76,36 @@ def mix_up_rate(result: ComparisonResult, false_facts_for_product: dict[str, lis
     return mixed / total
 
 
+def _surfaced_highlight_texts(result: ComparisonResult) -> set[str]:
+    """The normalized set of actual highlight content (a_text/b_text) a
+    result surfaces, excluding the "no evidence found" placeholder."""
+    texts: set[str] = set()
+    for row in result.rows:
+        for text in (row.a_text, row.b_text):
+            if text and text != "no evidence found":
+                texts.add(normalize(text))
+    return texts
+
+
 def order_swap_consistency(result_ab: ComparisonResult, result_ba: ComparisonResult) -> float:
-    """Jaccard similarity between the aspect sets produced for (A, B) and
-    (B, A): 1.0 means the same aspects were covered regardless of which
-    product was passed as product1 vs product2."""
-    aspects_ab = {normalize(row.aspect) for row in result_ab.rows}
-    aspects_ba = {normalize(row.aspect) for row in result_ba.rows}
-    if not aspects_ab and not aspects_ba:
+    """Jaccard similarity between the actual highlight CONTENT surfaced in
+    (A, B) order vs (B, A) order: 1.0 means the same evidence was surfaced
+    regardless of which product was passed as product1 vs product2.
+
+    This compares the quoted highlight text itself (row.a_text/row.b_text),
+    not row.aspect labels. Comparing only labels is a false positive risk:
+    the Comparison Agent picks an arbitrary 'aspect' string per row, so two
+    runs could produce the identical label set ("Highlight 1", "Highlight
+    2", ...) while quoting entirely different underlying content, and a
+    label-only Jaccard would still report perfect 1.0 consistency even
+    though the surfaced evidence itself disagreed between the two orders.
+    """
+    content_ab = _surfaced_highlight_texts(result_ab)
+    content_ba = _surfaced_highlight_texts(result_ba)
+    if not content_ab and not content_ba:
         return 1.0
-    union = aspects_ab | aspects_ba
-    intersection = aspects_ab & aspects_ba
+    union = content_ab | content_ba
+    intersection = content_ab & content_ba
     if not union:
         return 1.0
     return len(intersection) / len(union)

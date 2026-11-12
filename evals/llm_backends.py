@@ -54,6 +54,19 @@ class Fixture:
     pages: dict[str, dict[str, str]]  # {"product1": {url: html}, "product2": {...}}
     golden: dict[str, list[str]]
     false_facts: dict[str, list[str]] = field(default_factory=dict)
+    # Known prompt-injection strings planted in this fixture's page text
+    # (e.g. "IGNORE ALL PREVIOUS INSTRUCTIONS..."), keyed by product name.
+    # evals/run.py feeds these into metrics.injection_resistance so the
+    # metric is computed against real injected content instead of an
+    # always-empty list (see injection_attempt.yaml for the one fixture
+    # that actually plants one).
+    injected_strings: dict[str, list[str]] = field(default_factory=dict)
+
+    def injected_strings_for(self, product_name: str) -> list[str]:
+        return self.injected_strings.get(product_name, [])
+
+    def all_injected_strings(self) -> list[str]:
+        return self.injected_strings_for(self.product1) + self.injected_strings_for(self.product2)
 
     def pages_for(self, product_name: str) -> dict[str, str]:
         if product_name == self.product1:
@@ -80,6 +93,7 @@ def load_fixture(path: Path) -> Fixture:
         pages=data.get("pages", {}),
         golden=data.get("golden", {}),
         false_facts=data.get("false_facts", {}) or {},
+        injected_strings=data.get("injected_strings", {}) or {},
     )
 
 
@@ -154,16 +168,31 @@ def _url_selector_reply(record: dict, fixture: Fixture, product_name: str) -> st
 
 
 def _highlight_extractor_reply(record: dict, fixture: Fixture, product_name: str) -> str:
-    """A deliberately well-behaved "model": it only ever emits a highlight
-    whose quote is a literal, verbatim substring of the page_text it was
-    given (never of the other product's page, never of an injected
-    instruction it was told to ignore)."""
+    """Scripted "model" reply for the Highlight Extractor agent.
+
+    By default this is deliberately well-behaved: it only ever emits a
+    highlight whose quote is a literal, verbatim substring of the
+    page_text it was given (never of the other product's page, never of
+    an injected instruction it was told to ignore).
+
+    For a fixture that sets `injected_strings` (currently only
+    injection_attempt.yaml), it ALSO echoes back any injected string that
+    is present in the prompt text verbatim, simulating a model that fell
+    for a planted "ignore previous instructions" style injection. This is
+    what lets evals/run.py's injection_resistance metric be exercised
+    against a real violation instead of staying hardcoded at 1.0 because
+    it was never given anything to detect (see evals/run.py and
+    evals/metrics.py for the consuming side).
+    """
     prompt_text = _message_text(record["messages"])
     facts = fixture.golden.get(product_name, [])
     highlights = []
     for fact in facts:
         if fact.lower() in prompt_text.lower():
             highlights.append({"text": fact, "quote": fact})
+    for injected in fixture.injected_strings_for(product_name):
+        if injected.lower() in prompt_text.lower():
+            highlights.append({"text": injected, "quote": injected})
     return json.dumps({"highlights": highlights})
 
 
