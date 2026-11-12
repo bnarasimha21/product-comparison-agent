@@ -242,16 +242,63 @@ def test_decimal_number_quote_not_falsely_rejected():
     assert is_grounded(highlight, {page.url: page})
 
 
-def test_comma_separated_true_quote_still_grounded():
-    """The exact "commas aren't a cut point" bypass from the round-4
-    review: "No hidden fees" is a separate, true claim ahead of a comma,
-    not a negation of the quote that follows it. The clause boundary must
-    stop at the comma so "No hidden fees, it costs $19 per month" doesn't
-    get the real "costs $19 per month" quote rejected just because an
-    unrelated "No" sits a few words further back in the same sentence."""
+def test_comma_separated_true_quote_rejected_per_policy():
+    """Round-5 review: round-4 made the backward negation scan stop at a
+    comma/colon specifically so "No hidden fees, it costs $19 per month"
+    would not get "costs $19 per month" rejected by the unrelated "No" a
+    few words back. That reintroduced a worse bug (see the list/colon
+    negation tests below), so the comma/colon early stop was removed and
+    the backward scan now covers the full sentence again.
+
+    This is the deliberate, accepted side effect: "No hidden fees, it
+    costs $19 per month" now gets rejected too, because the policy is that
+    a false "grounded" on an actually-negated claim is worse than a false
+    rejection of an actually-true one. This is not special-cased back to
+    accepting -- it is intentional.
+    """
     page = _page("https://a.example/", "No hidden fees, it costs $19 per month.")
     highlight = Highlight(text="x", source_url=page.url, quote="costs $19 per month")
-    assert is_grounded(highlight, {page.url: page})
+    assert not is_grounded(highlight, {page.url: page})
+
+
+def test_list_negation_reaches_every_item_after_first_comma():
+    """Round-5 review's headline defect: round-4's comma early-stop meant a
+    negation governing a whole list only reached the first item, so items
+    after the first comma were graded GROUNDED evidence the product HAS
+    them, when the source says it lacks them. All three items must be
+    rejected."""
+    page = _page(
+        "https://a.example/",
+        "It lacks wireless charging, a headphone jack, and expandable storage.",
+    )
+    for quote in ("wireless charging", "headphone jack", "expandable storage"):
+        highlight = Highlight(text="x", source_url=page.url, quote=quote)
+        assert not is_grounded(highlight, {page.url: page}), quote
+
+
+def test_no_list_negation_reaches_every_item():
+    """Same failure mode with "no" instead of "lacks", and "or" instead of
+    "and"."""
+    page = _page(
+        "https://a.example/",
+        "It has no wireless charging, headphone jack, or microSD slot.",
+    )
+    for quote in ("wireless charging", "headphone jack", "microsd slot"):
+        highlight = Highlight(text="x", source_url=page.url, quote=quote)
+        assert not is_grounded(highlight, {page.url: page}), quote
+
+
+def test_colon_introduced_negation_rejected():
+    """"Not included: X." must reject X, and a comma-joined colon list must
+    reject every item in it."""
+    page = _page("https://a.example/", "Not included: USB-C charger.")
+    highlight = Highlight(text="x", source_url=page.url, quote="usb-c charger")
+    assert not is_grounded(highlight, {page.url: page})
+
+    page2 = _page("https://b.example/", "Not in the box: USB-C charger, wireless earbuds.")
+    for quote in ("usb-c charger", "wireless earbuds"):
+        highlight2 = Highlight(text="x", source_url=page2.url, quote=quote)
+        assert not is_grounded(highlight2, {page2.url: page2}), quote
 
 
 def test_trailing_negation_after_quote_rejected():
@@ -290,6 +337,67 @@ def test_page_number_boilerplate_with_digit_still_not_grounded():
     for quote in ("page 1 of 2", "all rights reserved. 2024"):
         highlight = Highlight(text="x", source_url=page.url, quote=quote)
         assert not is_grounded(highlight, {page.url: page}), quote
+
+
+# --- Round-5 review fixtures: digit-adjacency floor was too strict ---
+
+
+def test_currency_and_year_digit_adjacency_now_grounded():
+    """Round-5 review: the digit-adjacency floor rejected ordinary prices
+    and warranties because the word next to the digit was an ordinary
+    stopword ("at", "from") or because "year"/"years" were on the filler
+    list. A currency symbol directly touching a digit must count as
+    substantive on its own, and "year"/"years" must count as substantive
+    when digit-adjacent."""
+    cases = [
+        ("https://a.example/", "Priced at $999.", "priced at $999"),
+        ("https://b.example/", "From $999.", "from $999"),
+        ("https://c.example/", "$999 at launch.", "$999 at launch"),
+        ("https://d.example/", "Comes with a 1-year warranty.", "1-year warranty"),
+        ("https://e.example/", "Comes with a 2 year warranty.", "2 year warranty"),
+        ("https://f.example/", "The device weighs 171 g.", "171 g"),
+    ]
+    for url, page_text, quote in cases:
+        page = _page(url, page_text)
+        highlight = Highlight(text="x", source_url=url, quote=quote)
+        assert is_grounded(highlight, {url: page}), quote
+
+
+def test_currency_and_year_carveouts_do_not_reopen_junk_floor():
+    """The currency-symbol and year-unit carve-outs must only affect those
+    specific cases, not open up the floor generally: "page 1 of 2" and
+    "all rights reserved. 2024" must still fail after the fix."""
+    page = _page("https://a.example/", "Page 1 of 2. All rights reserved. 2024.")
+    for quote in ("page 1 of 2", "all rights reserved. 2024"):
+        highlight = Highlight(text="x", source_url=page.url, quote=quote)
+        assert not is_grounded(highlight, {page.url: page}), quote
+
+
+# --- Round-5 review fixtures: apostrophe lookalikes and zero-width chars ---
+
+
+def test_apostrophe_lookalike_negation_rejected():
+    """U+02BC (modifier letter apostrophe), U+FF07 (fullwidth apostrophe),
+    a backtick, and U+00B4 (acute accent) used in place of a real
+    apostrophe in a contraction must still be caught as negation, not
+    bypass the "doesn't"/"isn't"/etc. matching."""
+    lookalikes = ["ʼ", "＇", "`", "´"]
+    for i, mark in enumerate(lookalikes):
+        page = _page(
+            f"https://a.example/{i}", f"It doesn{mark}t support wireless charging."
+        )
+        highlight = Highlight(
+            text="x", source_url=page.url, quote="support wireless charging"
+        )
+        assert not is_grounded(highlight, {page.url: page}), mark
+
+
+def test_zero_width_space_inside_not_still_caught():
+    """A zero-width space (U+200B) spliced inside "not" must be stripped
+    before the negation regex runs, so "n​ot" still matches "not"."""
+    page = _page("https://a.example/", "It does n​ot support wireless charging.")
+    highlight = Highlight(text="x", source_url=page.url, quote="support wireless charging")
+    assert not is_grounded(highlight, {page.url: page})
 
 
 def test_distinct_drop_reasons():
