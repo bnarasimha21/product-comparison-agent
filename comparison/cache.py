@@ -139,4 +139,20 @@ def result_cache_key(request: Any, model_id: str | None = None) -> str:
     product1 = request.product1.strip().casefold()
     product2 = request.product2.strip().casefold()
     model_part = model_id or "unknown-model"
-    return f"result:{product1}|{product2}|{request.num_urls}|{request.num_highlights}|{model_part}"
+    return "result:" + _join_parts(
+        product1, product2, str(request.num_urls), str(request.num_highlights), model_part
+    )
+
+
+def _join_parts(*parts: str) -> str:
+    """Join parts into one key segment with no delimiter-collision risk.
+
+    A plain ``"|".join(parts)`` lets two different field sets collide
+    whenever the ``|`` delimiter itself appears inside a field: e.g.
+    ("a|b", "c") and ("a", "b|c") both join to the literal string
+    "a|b|c". Hashing each part individually before joining means the
+    joined string is built entirely from fixed-length hex digests that
+    can never themselves contain the glue character, so no input can ever
+    smuggle a fake delimiter into the key.
+    """
+    return "|".join(hashlib.sha256(part.encode("utf-8")).hexdigest() for part in parts)

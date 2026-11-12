@@ -143,6 +143,20 @@ def test_result_cache_key_stable_for_same_model():
     assert result_cache_key(req1, model_id="fake/fake-1") == result_cache_key(req2, model_id="fake/fake-1")
 
 
+def test_result_cache_key_does_not_collide_on_unescaped_delimiter():
+    """Regression for issue 5: the old key joined fields with a plain,
+    unescaped "|" character, so two different field sets could produce an
+    identical key whenever the "|" delimiter itself appeared inside a
+    field -- ("a|b", "c") and ("a", "b|c") both joined to the literal
+    string "a|b|c". Hashing each field individually before joining means
+    the delimiter character can never appear inside a field's own
+    contribution to the key, so this specific collision (and the general
+    class of it) is no longer possible."""
+    req1 = CompareRequest(product1="a|b", product2="c", num_urls=2, num_highlights=2)
+    req2 = CompareRequest(product1="a", product2="b|c", num_urls=2, num_highlights=2)
+    assert result_cache_key(req1) != result_cache_key(req2)
+
+
 def test_fixture_search_unaffected_by_caching_layer_contract(tmp_path):
     # Sanity check that FixtureSearch (used across the test suite) satisfies
     # the same interface the caching wrapper expects.
