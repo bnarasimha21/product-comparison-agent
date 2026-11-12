@@ -1,5 +1,18 @@
-crewai
-crewai-tools
-crewai[tools]
-python-dotenv
-gradio
+# Pinned against the versions this app was built and tested with
+# (crewai 1.15.34, confirmed on 2026-11-12; see comparison/fake_llm.py and
+# comparison/search.py docstrings for the framework behaviours verified on
+# this exact version). Bumping crewai or crewai-tools needs re-running the
+# "not yet verified" checks noted there.
+crewai==1.15.34
+crewai-tools==1.15.34
+gradio==5.49.1
+python-dotenv==1.2.2
+requests==2.33.0
+beautifulsoup4==4.13.4
+jinja2==3.1.4
+PyYAML==6.0.3
+
+# Note: crewai-tools' optional PDF extra (pdfplumber) wants Pillow>=12.2.0,
+# while gradio 5.49.1 wants Pillow<12. This app does not use the PDF tools,
+# so Pillow stays on gradio's constraint (`pip check` will still flag
+# pdfplumber as unsatisfied; that is expected and harmless here).
