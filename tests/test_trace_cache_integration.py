@@ -242,6 +242,76 @@ def test_cache_hit_miss_counters_in_trace_are_scoped_to_one_request(tmp_path, lo
     assert reported_hits <= cache.hits
 
 
+def test_cache_hit_trace_reflects_this_request_not_the_original_run(tmp_path, local_server):
+    """Regression for issue 4: on a cache hit, compare() used to return the
+    ORIGINAL run's stored trace wholesale (its llm_calls, token counts,
+    cache hit/miss counts), misrepresenting a request that made zero LLM
+    calls at all. The cache-hit trace must report its OWN, fresh metrics:
+    zero LLM calls, zero tokens, zero estimated cost, zero pages fetched/
+    failed (nothing was fetched this request), and a cache_hits count that
+    reflects this request, not the first one."""
+    url_a = local_server.add_page("/a.html", "<html><body>WidgetPro costs $19 per month.</body></html>")
+    url_b = local_server.add_page("/b.html", "<html><body>GadgetMax costs $25 per month.</body></html>")
+
+    search = FixtureSearch(
+        {
+            **{q: [SearchResult(title="a", url=url_a, snippet="")] for q in query_templates("WidgetPro")},
+            **{q: [SearchResult(title="b", url=url_b, snippet="")] for q in query_templates("GadgetMax")},
+        }
+    )
+
+    def fetch(url, **kwargs):
+        return fetch_page(url, allow_http=True, allow_private=True)
+
+    def make_llm():
+        return FakeLLM(
+            scripts={
+                "URL Selector for WidgetPro": [json.dumps({"urls": [url_a]})],
+                "URL Selector for GadgetMax": [json.dumps({"urls": [url_b]})],
+                "Highlight Extractor for WidgetPro": [
+                    json.dumps(
+                        {"highlights": [{"text": "price", "quote": "WidgetPro costs $19 per month"}]}
+                    )
+                ],
+                "Highlight Extractor for GadgetMax": [
+                    json.dumps(
+                        {"highlights": [{"text": "price", "quote": "GadgetMax costs $25 per month"}]}
+                    )
+                ],
+                "Comparison Agent": [
+                    json.dumps({"rows": [{"aspect": "Price", "a_index": 1, "b_index": 1}]})
+                ],
+            }
+        )
+
+    cache = DiskCache(tmp_path / "cache")
+    request = CompareRequest(product1="WidgetPro", product2="GadgetMax", num_urls=1, num_highlights=1)
+
+    first_result = compare(request, llm=make_llm(), search_provider=search, fetch_fn=fetch, cache=cache)
+    assert first_result.trace is not None
+    assert first_result.trace["llm_calls"] > 0  # the first run genuinely called the LLM
+
+    class ExplodingLLM:
+        model = "fake/fake-1"
+
+        def call(self, *args, **kwargs):
+            raise AssertionError("second run must not call the LLM: result should come from cache")
+
+    second_result = compare(
+        request, llm=ExplodingLLM(), search_provider=search, fetch_fn=fetch, cache=cache
+    )
+    assert second_result.trace is not None
+    assert second_result.trace["llm_calls"] == 0
+    assert second_result.trace["prompt_tokens"] == 0
+    assert second_result.trace["completion_tokens"] == 0
+    assert second_result.trace["total_tokens"] == 0
+    assert second_result.trace["estimated_cost_usd"] == 0.0
+    assert second_result.trace["pages_fetched"] == 0
+    assert second_result.trace["pages_failed"] == 0
+    # The trace is not simply the first run's trace copied verbatim.
+    assert second_result.trace != first_result.trace
+
+
 def test_trace_json_round_trips(tmp_path, local_server):
     url_a = local_server.add_page("/a.html", "<html><body>WidgetPro costs $19 per month.</body></html>")
     url_b = local_server.add_page("/b.html", "<html><body>GadgetMax costs $25 per month.</body></html>")

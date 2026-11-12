@@ -7,6 +7,7 @@ main.py is a thin wrapper around compare().
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from .fetch import fetch_page
 from .flow import ProductComparisonFlow
 from .models import CompareRequest, ComparisonResult, Page
 from .search import SearchProvider, SerperSearch
-from .trace import build_trace
+from .trace import Trace, build_trace
 
 ProgressCallback = Callable[[float, str], None]
 
@@ -44,6 +45,7 @@ def compare(
     a *different* request that shares a search query or a fetched URL with a
     prior run still benefits even on a result-cache miss.
     """
+    started_at = time.monotonic()
     provider = search_provider or SerperSearch()
     fetcher = fetch_fn
     # Known before the flow even runs: llm is given to us directly, so the
@@ -62,7 +64,33 @@ def compare(
         hits_before, misses_before = cache.hits, cache.misses
         cached_payload = cache.get(cache_key)
         if cached_payload is not None:
-            return ComparisonResult.model_validate(cached_payload)
+            cached_result = ComparisonResult.model_validate(cached_payload)
+            # The stored payload's own `trace` is left over from the
+            # ORIGINAL run that computed this result -- its llm_calls,
+            # token counts, and cache hit/miss counts describe what that
+            # run did, not this request. Returning it wholesale would show
+            # a "run details" panel claiming LLM calls and tokens were
+            # spent on a request that never called an LLM at all. Build a
+            # fresh trace that actually reflects THIS request: zero LLM
+            # calls, zero tokens, this request's own cache hit/miss delta,
+            # and this request's own (short) wall time.
+            cache_hits = cache.hits - hits_before
+            cache_misses = cache.misses - misses_before
+            fresh_trace = Trace(
+                stages=[{"name": "cache_hit", "seconds": time.monotonic() - started_at}],
+                llm_calls=0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                cache_hits=cache_hits,
+                cache_misses=cache_misses,
+                pages_fetched=0,
+                pages_failed=0,
+                estimated_cost_usd=0.0,
+                model_id=model_id,
+            )
+            cached_result.trace = fresh_trace.model_dump()
+            return cached_result
 
     result = asyncio.run(
         _run_flow(request, llm=llm, search_provider=provider, fetch_fn=fetcher, progress=progress)
