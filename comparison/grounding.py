@@ -1,10 +1,21 @@
 """Deterministic grounding check for highlights.
 
 The pipeline never trusts an LLM's claim that a highlight came from a page;
-is_grounded re-checks it in code. A highlight is grounded only if its quote
-is a (whitespace/case-normalized) substring of the text fetched from its
-own source_url -- never a concatenation of multiple pages, so a quote that
-spans two pages is correctly rejected.
+is_grounded re-checks it in code. A highlight is grounded only if:
+
+1. its quote is long enough to be a meaningful claim, not a single common
+   word (see MIN_QUOTE_WORDS / MIN_QUOTE_CHARS below), and
+2. its quote is a (whitespace/case-normalized) substring of the text fetched
+   from its own source_url -- never a concatenation of multiple pages, so a
+   quote that spans two pages is correctly rejected.
+
+Grounding only ever checks ``quote`` against the page, never ``quote``
+against the model's separate, human-readable ``text`` field -- ``text`` is
+never checked against anything. That means ``text`` must never be what the
+final report renders as the claim: comparison/flow.py renders
+``highlight.quote`` itself for a_text/b_text, so the thing shown to a human
+is always exactly the thing that was verified, not a free-floating paraphrase
+the model could have fabricated independently of its own cited quote.
 """
 
 from __future__ import annotations
@@ -14,17 +25,39 @@ import re
 from .models import Highlight, Page
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+# A quote must be at least this many characters and contain at least this
+# many distinct words to count as evidence. Without this, a single common
+# word ("the", "is") is trivially a substring of almost any page, so
+# `is_grounded` would accept a quote that proves nothing. Two words / 12
+# characters is deliberately low (not e.g. a full sentence): it is enough to
+# reject a single bare word while still accepting genuine short factual
+# quotes already used throughout this app's own fixtures and tests, such as
+# "weighs 180 grams" or "community plugins".
+MIN_QUOTE_WORDS = 2
+MIN_QUOTE_CHARS = 12
 
 
 def normalize(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip().casefold()
 
 
+def _quote_long_enough(quote: str) -> bool:
+    normalized = normalize(quote)
+    if len(normalized) < MIN_QUOTE_CHARS:
+        return False
+    return len(set(_WORD_RE.findall(normalized))) >= MIN_QUOTE_WORDS
+
+
 def is_grounded(highlight: Highlight, pages: dict[str, Page]) -> bool:
-    """True iff highlight.quote is a substring of the text at its own
-    source_url, and that URL was actually fetched successfully."""
+    """True iff highlight.quote is long enough to be meaningful evidence AND
+    is a substring of the text at its own source_url, which must have been
+    fetched successfully."""
     quote = normalize(highlight.quote)
     if not quote:
+        return False
+    if not _quote_long_enough(highlight.quote):
         return False
     page = pages.get(highlight.source_url)
     if page is None or not page.ok:
@@ -55,7 +88,18 @@ def ground_highlights(
     return grounded, dropped
 
 
-def ground_rate(proposed_count: int, grounded_count: int) -> float:
+def ground_rate(proposed_count: int, grounded_count: int) -> float | None:
+    """The fraction of proposed highlights that survived grounding, or None
+    when nothing was ever proposed.
+
+    Returning 1.0 for "zero proposed" (the old behaviour) misleadingly
+    displayed "100% grounded" for a product with no evidence at all --
+    indistinguishable from a product where everything genuinely checked
+    out. None is a distinct "n/a: nothing to ground" signal that callers
+    (comparison/render.py, evals/metrics.py) must render/aggregate
+    differently from an actual 0.0 ("everything proposed was rejected") or
+    1.0 ("everything proposed was grounded").
+    """
     if proposed_count <= 0:
-        return 1.0
+        return None
     return grounded_count / proposed_count

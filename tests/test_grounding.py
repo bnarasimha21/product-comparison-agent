@@ -70,6 +70,25 @@ def test_ground_highlights_splits_grounded_and_dropped():
 
 
 def test_ground_rate():
-    assert ground_rate(0, 0) == 1.0
+    assert ground_rate(0, 0) is None
     assert ground_rate(2, 1) == 0.5
     assert ground_rate(4, 4) == 1.0
+
+
+def test_single_common_word_quote_not_grounded():
+    """The exact attack scenario from the adversarial review: a model
+    proposes a plausible-sounding `text` paraphrase but cites a quote that
+    is just one common word, which is a substring of nearly any page. This
+    must be rejected on quote length alone, regardless of what `text` says,
+    and regardless of whether `text` happens to appear on the page too."""
+    page = _page("https://a.example/", "Fully waterproof to 50m, the manual says so.")
+    highlight = Highlight(
+        text="Fully waterproof to 50m", source_url=page.url, quote="the"
+    )
+    assert not is_grounded(highlight, {page.url: page})
+
+
+def test_short_two_word_quote_below_char_minimum_not_grounded():
+    page = _page("https://a.example/", "It is on sale.")
+    highlight = Highlight(text="x", source_url=page.url, quote="on sale")
+    assert not is_grounded(highlight, {page.url: page})

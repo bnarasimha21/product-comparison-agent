@@ -53,9 +53,11 @@ _TEMPLATE_SOURCE = """
     </tbody>
   </table>
   <p class="report-footer">
-    {{ result.product1_name }} ground rate: {{ "%.0f"|format(result.product1_ground_rate * 100) }}%
+    {{ result.product1_name }} ground rate:
+    {% if result.product1_ground_rate is none %}n/a (nothing proposed){% else %}{{ "%.0f"|format(result.product1_ground_rate * 100) }}%{% endif %}
     ({{ result.product1_dropped }} dropped as ungrounded).
-    {{ result.product2_name }} ground rate: {{ "%.0f"|format(result.product2_ground_rate * 100) }}%
+    {{ result.product2_name }} ground rate:
+    {% if result.product2_ground_rate is none %}n/a (nothing proposed){% else %}{{ "%.0f"|format(result.product2_ground_rate * 100) }}%{% endif %}
     ({{ result.product2_dropped }} dropped as ungrounded).
     {% if result.product1_error %}<br>{{ result.product1_name }}: {{ result.product1_error }}{% endif %}
     {% if result.product2_error %}<br>{{ result.product2_name }}: {{ result.product2_error }}{% endif %}

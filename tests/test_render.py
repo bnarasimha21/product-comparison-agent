@@ -73,6 +73,13 @@ def test_ground_rate_and_dropped_counts_shown():
     assert "1 dropped as ungrounded" in html
 
 
+def test_none_ground_rate_renders_as_na():
+    """A ground_rate of None ("nothing proposed") must render distinctly
+    from an actual 0% or 100%, never crash on `None * 100`."""
+    html = render_html(_result(product1_ground_rate=None, product2_ground_rate=None))
+    assert html.count("n/a (nothing proposed)") == 2
+
+
 def test_error_notes_shown_when_present():
     html = render_html(_result(product1_error="research stage timed out after 120.0s"))
     assert "research stage timed out after 120.0s" in html

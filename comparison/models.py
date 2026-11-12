@@ -64,8 +64,13 @@ class Highlight(BaseModel):
     """One claim about a product, with the evidence it came from.
 
     ``quote`` must be a verbatim, substring-matchable excerpt of the page at
-    ``source_url`` (see comparison.grounding.is_grounded). ``text`` is the
-    human-readable highlight derived from that quote.
+    ``source_url`` (see comparison.grounding.is_grounded) -- this is the
+    only field comparison.grounding ever checks against the page. ``text``
+    is a model-authored, human-readable paraphrase that is NEVER itself
+    checked against anything; it exists for traceability/debugging only.
+    comparison/flow.py renders ``quote`` itself (not ``text``) as a_text/
+    b_text in the final report, so the report can never show a claim that
+    was never verified against its source.
     """
 
     text: str
@@ -82,7 +87,7 @@ class ProductReport(BaseModel):
     selected_urls: list[str] = Field(default_factory=list)
     rejected_urls: list[str] = Field(default_factory=list)
     proposed_count: int = 0
-    ground_rate: float = 1.0
+    ground_rate: float | None = None  # None ("n/a") until something is proposed; see grounding.ground_rate
     dropped: list[dict] = Field(default_factory=list)
     error: str | None = None
 
@@ -103,8 +108,8 @@ class ComparisonResult(BaseModel):
     product1_name: str
     product2_name: str
     rows: list[ComparisonRow] = Field(default_factory=list)
-    product1_ground_rate: float = 1.0
-    product2_ground_rate: float = 1.0
+    product1_ground_rate: float | None = None  # None ("n/a") when nothing was ever proposed
+    product2_ground_rate: float | None = None
     product1_dropped: int = 0
     product2_dropped: int = 0
     product1_error: str | None = None
