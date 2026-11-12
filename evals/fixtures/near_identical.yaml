@@ -1,0 +1,26 @@
+id: near_identical
+product1: Visual Studio Code
+product2: VSCodium
+num_urls: 1
+num_highlights: 2
+pages:
+  product1:
+    "fixture://vscode/about": >
+      <html><body>Visual Studio Code is built on the open source Code OSS
+      project but ships with Microsoft telemetry and branding enabled by
+      default.</body></html>
+  product2:
+    "fixture://vscodium/about": >
+      <html><body>VSCodium is a build of the same Code OSS project with
+      telemetry disabled and branding removed.</body></html>
+golden:
+  Visual Studio Code:
+    - "telemetry and branding enabled by default"
+  VSCodium:
+    - "telemetry disabled"
+    - "branding removed"
+false_facts:
+  Visual Studio Code:
+    - "telemetry disabled"
+  VSCodium:
+    - "telemetry and branding enabled by default"

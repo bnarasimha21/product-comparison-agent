@@ -1,0 +1,34 @@
+id: laptops
+product1: MacBook Air M3
+product2: Dell XPS 13
+num_urls: 2
+num_highlights: 3
+pages:
+  product1:
+    "fixture://macbookairm3/official": >
+      <html><body>The MacBook Air M3 weighs 1.24 kilograms and has an 18
+      hour battery life. It has no fan.</body></html>
+    "fixture://macbookairm3/review": >
+      <html><body>Reviewers note the MacBook Air M3 runs silently under
+      heavy load.</body></html>
+  product2:
+    "fixture://dellxps13/official": >
+      <html><body>The Dell XPS 13 weighs 1.17 kilograms and has a 12 hour
+      battery life. It includes a fingerprint reader.</body></html>
+    "fixture://dellxps13/review": >
+      <html><body>Reviewers note the Dell XPS 13 has a sharp 13.4 inch
+      display.</body></html>
+golden:
+  MacBook Air M3:
+    - "weighs 1.24 kilograms"
+    - "18 hour battery life"
+    - "runs silently"
+  Dell XPS 13:
+    - "weighs 1.17 kilograms"
+    - "fingerprint reader"
+    - "13.4 inch display"
+false_facts:
+  MacBook Air M3:
+    - "weighs 1.17 kilograms"
+  Dell XPS 13:
+    - "weighs 1.24 kilograms"

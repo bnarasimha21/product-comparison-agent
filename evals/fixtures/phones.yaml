@@ -1,0 +1,34 @@
+id: phones
+product1: iPhone 15
+product2: Galaxy S24
+num_urls: 2
+num_highlights: 3
+pages:
+  product1:
+    "fixture://iphone15/official": >
+      <html><body>The iPhone 15 weighs 171 grams and has a 6.1-inch display.
+      It starts at $799 and ships with USB-C.</body></html>
+    "fixture://iphone15/review": >
+      <html><body>Reviewers say the iPhone 15 camera takes excellent
+      low-light photos.</body></html>
+  product2:
+    "fixture://galaxys24/official": >
+      <html><body>The Galaxy S24 weighs 168 grams and has a 6.2-inch display.
+      It starts at $799 and includes a built-in AI assistant.</body></html>
+    "fixture://galaxys24/review": >
+      <html><body>Reviewers praise the Galaxy S24's AI-powered photo editing
+      features.</body></html>
+golden:
+  iPhone 15:
+    - "weighs 171 grams"
+    - "6.1-inch display"
+    - "ships with usb-c"
+  Galaxy S24:
+    - "weighs 168 grams"
+    - "6.2-inch display"
+    - "ai-powered photo editing"
+false_facts:
+  iPhone 15:
+    - "weighs 168 grams"
+  Galaxy S24:
+    - "weighs 171 grams"
